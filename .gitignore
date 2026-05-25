@@ -1,0 +1,21 @@
+# Environnement Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Anciennes versions (conservées localement)
+V1_working/
+v2_working/
+v3_working/
+v4/
+v5_working/
+
+# Fichiers temporaires de téléchargement
+local_video.m3u8
+local_audio.m3u8
+raw_video.m3u8
+raw_audio.m3u8
+
+# Vidéos de sortie
+*.mp4

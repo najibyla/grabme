@@ -1,0 +1,9 @@
+{
+  "name": "com.skool.grabme",
+  "description": "GrabMe — Native Messaging Host pour téléchargement vidéo sans serveur Flask",
+  "path": "REMPLACE_PAR_install_native_host.bat",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://REMPLACE_PAR_TON_EXTENSION_ID/"
+  ]
+}
