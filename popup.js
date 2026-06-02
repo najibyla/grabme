@@ -24,20 +24,26 @@ function startDownload(streamObj, index, formatValue) {
   statusDiv.style.color = "#666";
   statusDiv.innerText = "⏳ Connexion au serveur...";
 
-  // Masquer le panel qualité une fois le téléchargement lancé
   const panel = document.getElementById(`quality-panel-${index}`);
   if (panel) panel.style.display = "none";
 
-  fetch("http://127.0.0.1:5000/download", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      url: streamObj.url,
-      title: titleFromStream(streamObj),
-      format: formatValue || "",
-      audioUrl: streamObj.audioUrl || ""
+  // Relire depuis le storage pour obtenir l'audioUrl le plus récent
+  // (background.js peut l'avoir ajouté après le render du popup)
+  const streamsKey = `streams_${currentTab.id}`;
+  chrome.storage.local.get([streamsKey], (result) => {
+    const fresh = (result[streamsKey] || []).find(s => s.url === streamObj.url);
+    const audioUrl = (fresh && fresh.audioUrl) ? fresh.audioUrl : (streamObj.audioUrl || "");
+
+    fetch("http://127.0.0.1:5000/download", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        url: streamObj.url,
+        title: titleFromStream(streamObj),
+        format: formatValue || "",
+        audioUrl
+      })
     })
-  })
   .then(res => res.json())
   .then(data => {
     if (!data.job_id) {
@@ -81,11 +87,12 @@ function startDownload(streamObj, index, formatValue) {
       downloadBtn.disabled = false;
     };
   })
-  .catch(() => {
-    statusDiv.innerText = "❌ Serveur Python éteint 🔌";
-    statusDiv.style.color = "#dc3545";
-    downloadBtn.disabled = false;
-  });
+    .catch(() => {
+      statusDiv.innerText = "❌ Serveur Python éteint 🔌";
+      statusDiv.style.color = "#dc3545";
+      downloadBtn.disabled = false;
+    });
+  }); // fin chrome.storage.local.get
 }
 
 // Cache des qualités déjà chargées (url -> qualities[])
