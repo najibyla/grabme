@@ -34,7 +34,8 @@ function startDownload(streamObj, index, formatValue) {
     body: JSON.stringify({
       url: streamObj.url,
       title: titleFromStream(streamObj),
-      format: formatValue || ""
+      format: formatValue || "",
+      audioUrl: streamObj.audioUrl || ""
     })
   })
   .then(res => res.json())

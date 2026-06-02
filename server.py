@@ -162,24 +162,24 @@ def run_youtube(url: str, fichier_sortie: str, q: queue.Queue, format_str: str =
     return fichier_sortie
 
 
-def run_vimeo(url_entree: str, fichier_sortie: str, q: queue.Queue):
-    """Vimeo CDN : vidéo et audio dans des playlists HLS séparées (sep/video / sep/audio).
-    Si l'URL est une variant vidéo, on dérive l'URL audio depuis le même chemin CDN
-    (même query string / signature CloudFront, seul le segment de chemin change).
+def run_vimeo(url_entree: str, fichier_sortie: str, q: queue.Queue, audio_url: str = ""):
+    """Vimeo CDN (URLs pré-signées CloudFront).
+    - Master playlist : FFmpeg résout EXT-X-MEDIA et inclut l'audio automatiquement (pas de -map).
+    - Variant vidéo + URL audio capturée : fusion deux entrées FFmpeg.
     """
     push(q, {"type": "progress", "label": "Téléchargement Vimeo..."})
 
-    if "/sep/video/" in url_entree:
-        # Variant vidéo seule → dériver l'URL de la playlist audio associée
-        audio_url = re.sub(r"/sep/video/[^/]+/", "/sep/audio/default/", url_entree)
+    if audio_url:
+        # URL audio réelle capturée par background.js — fusion deux inputs
         cmd = ["ffmpeg",
-               "-i", url_entree,   # vidéo
-               "-i", audio_url,    # audio (même session CDN, chemin différent)
+               "-i", url_entree,
+               "-i", audio_url,
                "-map", "0:v:0?",
                "-map", "1:a:0?",
                "-c", "copy", "-y", fichier_sortie]
     else:
-        # Master playlist — FFmpeg résout EXT-X-MEDIA et inclut l'audio automatiquement
+        # Master playlist (ou stream muxé) — laisser FFmpeg gérer EXT-X-MEDIA
+        # NB : pas de -map pour ne pas bloquer la résolution automatique des groupes audio HLS
         cmd = ["ffmpeg",
                "-i", url_entree,
                "-c", "copy", "-y", fichier_sortie]
@@ -218,7 +218,7 @@ def _update_job(job_id: str, **kwargs):
             _jobs[job_id].update(kwargs)
 
 
-def download_worker(job_id: str, url: str, fichier_sortie: str, format_str: str = ""):
+def download_worker(job_id: str, url: str, fichier_sortie: str, format_str: str = "", audio_url: str = ""):
     with _jobs_lock:
         job = _jobs.get(job_id)
     if job is None:
@@ -230,8 +230,8 @@ def download_worker(job_id: str, url: str, fichier_sortie: str, format_str: str 
         elif "youtube.com" in url or "youtu.be" in url:
             fichier_sortie = run_youtube(url, fichier_sortie, q, format_str)
         elif "vimeocdn.com" in url or "vimeo.com" in url:
-            # format_str peut être une URL de variante HLS spécifique
-            run_vimeo(format_str if format_str.startswith("http") else url, fichier_sortie, q)
+            actual = format_str if format_str.startswith("http") else url
+            run_vimeo(actual, fichier_sortie, q, audio_url)
         else:
             run_skool(format_str if format_str.startswith("http") else url, fichier_sortie, q)
 
@@ -350,6 +350,7 @@ def download():
     url = data.get("url", "").strip()
     title = data.get("title", "")
     format_str = data.get("format", "").strip()
+    audio_url  = data.get("audioUrl", "").strip()
 
     if not url:
         return jsonify({"status": "error", "message": "URL manquante"}), 400
@@ -363,7 +364,7 @@ def download():
     fichier_sortie = unique_path(stem)
 
     threading.Thread(
-        target=download_worker, args=(job_id, url, fichier_sortie, format_str), daemon=True
+        target=download_worker, args=(job_id, url, fichier_sortie, format_str, audio_url), daemon=True
     ).start()
 
     return jsonify({"job_id": job_id})

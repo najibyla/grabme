@@ -55,22 +55,40 @@ chrome.webRequest.onBeforeRequest.addListener(
     // Utilise le titre envoyé par content.js depuis l'iframe player.vimeo.com
     // (plus précis que le titre de l'onglet parent qui affiche le nom du site)
     if (url.includes("vimeocdn.com") && url.includes(".m3u8")) {
-      // Ignorer les playlists audio seules — le serveur les dérive automatiquement
-      // depuis l'URL vidéo (/sep/video/ → /sep/audio/default/)
-      if (url.includes("/sep/audio/")) return;
+      // Ignorer les playlists I-frame-only (très bas débit, uniquement pour le seek)
+      if (url.includes("iframe")) return;
 
+      if (url.includes("/sep/audio/")) {
+        // Associer l'URL audio au stream vidéo Vimeo le plus récent du même onglet
+        const key = `streams_${tabId}`;
+        chrome.storage.local.get([key], (result) => {
+          const streams = result[key] || [];
+          let updated = false;
+          for (const s of streams) {
+            if (s.label && s.label.includes("VIMEO") && !s.audioUrl) {
+              s.audioUrl = url;
+              updated = true;
+              break;
+            }
+          }
+          if (updated) chrome.storage.local.set({ [key]: streams });
+        });
+        return;
+      }
+
+      // Master ou variant vidéo — stocker avec audioUrl vide (sera rempli par /sep/audio/)
       const titleKey = `vimeo_current_title_${tabId}`;
       chrome.storage.local.get([titleKey], (result) => {
         const stored = result[titleKey];
         if (stored) {
-          storeStream(tabId, { url, label: `🎬 VIMEO - ${stored}` }, true);
+          storeStream(tabId, { url, label: `🎬 VIMEO - ${stored}`, audioUrl: "" }, true);
         } else {
           chrome.tabs.get(tabId, (tab) => {
             if (chrome.runtime.lastError) return;
             const videoTitle = (tab && tab.title)
               ? tab.title.replace(/ [-|–].+$/, "").trim()
               : "Vidéo";
-            storeStream(tabId, { url, label: `🎬 VIMEO - ${videoTitle}` }, true);
+            storeStream(tabId, { url, label: `🎬 VIMEO - ${videoTitle}`, audioUrl: "" }, true);
           });
         }
       });
