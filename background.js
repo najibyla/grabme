@@ -94,7 +94,8 @@ chrome.tabs.onRemoved.addListener(function(tabId) {
   chrome.storage.local.remove([
     `streams_${tabId}`,
     `vimeo_playlist_${tabId}`,
-    `vimeo_current_title_${tabId}`
+    `vimeo_current_title_${tabId}`,
+    `yt_pending_${tabId}`
   ]);
 });
 
@@ -109,28 +110,57 @@ function extractYouTubeId(url) {
 }
 
 chrome.tabs.onUpdated.addListener(function(tabId, changeInfo) {
-  if (!changeInfo.url) return;
+  // --- Changement d'URL : navigation vers une nouvelle page ---
+  if (changeInfo.url) {
+    chrome.storage.local.remove([
+      `streams_${tabId}`,
+      `vimeo_playlist_${tabId}`,
+      `vimeo_current_title_${tabId}`,
+      `yt_pending_${tabId}`
+    ]);
+    chrome.action.setBadgeText({ tabId: tabId, text: "" });
 
-  chrome.storage.local.remove([
-    `streams_${tabId}`,
-    `vimeo_playlist_${tabId}`,
-    `vimeo_current_title_${tabId}`
-  ]);
-  chrome.action.setBadgeText({ tabId: tabId, text: "" });
+    const ytId = extractYouTubeId(changeInfo.url);
+    if (ytId && (changeInfo.url.includes("youtube.com/watch") ||
+                 changeInfo.url.includes("youtu.be/") ||
+                 changeInfo.url.includes("youtube.com/shorts/"))) {
+      const videoUrl = `https://www.youtube.com/watch?v=${ytId}`;
+      const isShort  = changeInfo.url.includes("youtube.com/shorts/");
+      const prefix   = isShort ? "▶️ SHORT" : "▶️ YOUTUBE";
 
-  // Auto-détecter les onglets YouTube directs
-  const ytId = extractYouTubeId(changeInfo.url);
-  if (ytId && (changeInfo.url.includes("youtube.com/watch") || changeInfo.url.includes("youtu.be/") || changeInfo.url.includes("youtube.com/shorts/"))) {
-    const videoUrl = `https://www.youtube.com/watch?v=${ytId}`;
-    setTimeout(() => {
-      chrome.tabs.get(tabId, (t) => {
-        if (chrome.runtime.lastError) return;
-        const isShort = changeInfo.url.includes("youtube.com/shorts/");
-        const title = (t && t.title && !t.title.includes("youtube.com")) ? t.title : (isShort ? "Short YouTube" : "Vidéo YouTube");
-        const prefix = isShort ? "▶️ SHORT" : "▶️ YOUTUBE";
-        storeStream(tabId, { url: videoUrl, label: `${prefix} - ${title}` }, true);
+      // Enregistrer immédiatement — pas de setTimeout (non fiable en MV3 service worker)
+      // Le titre "⏳" sera mis à jour dès que changeInfo.title arrive
+      storeStream(tabId, { url: videoUrl, label: `${prefix} - ⏳` }, true);
+      chrome.storage.local.set({ [`yt_pending_${tabId}`]: { videoUrl, prefix } });
+    }
+  }
+
+  // --- Mise à jour du titre de l'onglet → compléter le label YouTube ---
+  if (changeInfo.title) {
+    chrome.storage.local.get([`yt_pending_${tabId}`], (result) => {
+      const pending = result[`yt_pending_${tabId}`];
+      if (!pending) return;
+
+      const cleanTitle = changeInfo.title.replace(/ [-–|] YouTube$/, "").trim();
+      if (!cleanTitle || cleanTitle.toLowerCase() === "youtube") return;
+
+      const streamsKey = `streams_${tabId}`;
+      chrome.storage.local.get([streamsKey], (res) => {
+        const streams = res[streamsKey] || [];
+        let updated = false;
+        for (const s of streams) {
+          if (s.url === pending.videoUrl) {
+            s.label  = `${pending.prefix} - ${cleanTitle}`;
+            updated  = true;
+            break;
+          }
+        }
+        if (updated) {
+          chrome.storage.local.set({ [streamsKey]: streams });
+          chrome.storage.local.remove([`yt_pending_${tabId}`]);
+        }
       });
-    }, 1500);
+    });
   }
 });
 
@@ -204,6 +234,9 @@ chrome.runtime.onMessage.addListener(function(msg, sender) {
 
   // Titre de la vidéo courante envoyé depuis l'iframe player.vimeo.com
   if (msg.action === "vimeoFrameTitle") {
+    // Ignorer les titres internes Vimeo (proxy localStorage, pages utilitaires)
+    const badTitles = ["vimeo player localstorage proxy", "localstorage proxy", "vimeo", "player", "untitled"];
+    if (badTitles.includes(msg.title.toLowerCase())) return;
     chrome.storage.local.set({ [`vimeo_current_title_${tabId}`]: msg.title });
 
     // Mettre à jour le label du stream Vimeo le plus récent si déjà capturé

@@ -7,9 +7,18 @@
   // =====================================================================
   if (location.hostname === "player.vimeo.com") {
 
+    // Titres Vimeo internes à ignorer (iframes de proxy, pages utilitaires)
+    const BAD_TITLES = new Set([
+      "vimeo",
+      "vimeo player localstorage proxy",
+      "localstorage proxy",
+      "player",
+      "untitled"
+    ]);
+
     function sendCurrentTitle() {
       const title = document.title.replace(/\s*on Vimeo$/i, "").trim();
-      if (title && title.toLowerCase() !== "vimeo") {
+      if (title && !BAD_TITLES.has(title.toLowerCase())) {
         chrome.runtime.sendMessage({ action: "vimeoFrameTitle", title });
       }
     }
