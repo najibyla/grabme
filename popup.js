@@ -1,24 +1,22 @@
 let currentTab = null;
 const activeJobs = new Map(); // url -> EventSource en cours
-let currentStreams = [];       // référence pour "Tout télécharger"
+let currentStreams = [];
 
-// Extrait un titre propre depuis le label du stream (pour le nom de fichier)
 function titleFromStream(streamObj) {
-  const m = streamObj.label.match(/(?:VIMEO|YOUTUBE|LOOM)\s*-\s*(.+)$/i);
+  const m = streamObj.label.match(/(?:VIMEO|YOUTUBE|LOOM|SHORT)\s*-\s*(.+)$/i);
   if (m) {
     const extracted = m[1].trim();
-    // Ignorer les labels génériques de plateforme
-    if (!/^(vidéo|video|direct|embed|native|sous-playlist|audio|master)/i.test(extracted)) {
+    if (!/^(vidéo|video|direct|embed|native|sous-playlist|audio|master|short)/i.test(extracted)) {
       return extracted;
     }
   }
   return currentTab ? currentTab.title : "video";
 }
 
-function startDownload(streamObj, index) {
+function startDownload(streamObj, index, formatValue) {
   if (activeJobs.has(streamObj.url)) return;
 
-  const statusDiv  = document.getElementById(`status-${index}`);
+  const statusDiv   = document.getElementById(`status-${index}`);
   const downloadBtn = document.getElementById(`download-${index}`);
   if (!statusDiv || !downloadBtn) return;
 
@@ -26,10 +24,18 @@ function startDownload(streamObj, index) {
   statusDiv.style.color = "#666";
   statusDiv.innerText = "⏳ Connexion au serveur...";
 
+  // Masquer le panel qualité une fois le téléchargement lancé
+  const panel = document.getElementById(`quality-panel-${index}`);
+  if (panel) panel.style.display = "none";
+
   fetch("http://127.0.0.1:5000/download", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ url: streamObj.url, title: titleFromStream(streamObj) })
+    body: JSON.stringify({
+      url: streamObj.url,
+      title: titleFromStream(streamObj),
+      format: formatValue || ""
+    })
   })
   .then(res => res.json())
   .then(data => {
@@ -40,12 +46,7 @@ function startDownload(streamObj, index) {
       return;
     }
 
-    // Déléguer le suivi au service worker — le téléchargement continue même si le popup se ferme
-    chrome.runtime.sendMessage({
-      action: "trackJob",
-      jobId: data.job_id,
-      title: titleFromStream(streamObj)
-    });
+    chrome.runtime.sendMessage({ action: "trackJob", jobId: data.job_id, title: titleFromStream(streamObj) });
 
     const evtSource = new EventSource(`http://127.0.0.1:5000/progress/${data.job_id}`);
     activeJobs.set(streamObj.url, evtSource);
@@ -53,17 +54,11 @@ function startDownload(streamObj, index) {
     evtSource.onmessage = (e) => {
       const msg = JSON.parse(e.data);
       if (msg.type === "ping") return;
-
       if (msg.type === "progress") {
-        if (msg.percent !== undefined) {
-          statusDiv.innerText = `⏳ ${msg.percent}%`;
-        } else if (msg.label && msg.time) {
-          statusDiv.innerText = `⏳ ${msg.label} — ${msg.time}`;
-        } else if (msg.label) {
-          statusDiv.innerText = `⏳ ${msg.label}`;
-        } else if (msg.time) {
-          statusDiv.innerText = `⏳ ${msg.time}`;
-        }
+        if (msg.percent !== undefined)       statusDiv.innerText = `⏳ ${msg.percent}%`;
+        else if (msg.label && msg.time)      statusDiv.innerText = `⏳ ${msg.label} — ${msg.time}`;
+        else if (msg.label)                  statusDiv.innerText = `⏳ ${msg.label}`;
+        else if (msg.time)                   statusDiv.innerText = `⏳ ${msg.time}`;
       } else if (msg.type === "done") {
         statusDiv.innerText = `✅ ${msg.filename}`;
         statusDiv.style.color = "#28a745";
@@ -80,8 +75,6 @@ function startDownload(streamObj, index) {
     };
 
     evtSource.onerror = () => {
-      // Le popup s'est fermé ou la connexion SSE a été coupée — le téléchargement
-      // continue côté serveur ; le service worker enverra une notification à la fin
       evtSource.close();
       activeJobs.delete(streamObj.url);
       downloadBtn.disabled = false;
@@ -94,11 +87,72 @@ function startDownload(streamObj, index) {
   });
 }
 
+// Cache des qualités déjà chargées (url -> qualities[])
+const qualityCache = new Map();
+
+function loadQualities(streamObj, index) {
+  const panel      = document.getElementById(`quality-panel-${index}`);
+  const toggleBtn  = document.getElementById(`quality-toggle-${index}`);
+  if (!panel) return;
+
+  // Toggle visibility si déjà chargé
+  if (panel.dataset.loaded === "1") {
+    const visible = panel.style.display !== "none";
+    panel.style.display = visible ? "none" : "block";
+    toggleBtn.innerText = visible ? "▾ Qualités" : "▴ Qualités";
+    return;
+  }
+
+  panel.style.display = "block";
+  toggleBtn.innerText = "▴ Qualités";
+  panel.innerHTML = '<span style="font-size:11px;color:#888;">⏳ Chargement des qualités...</span>';
+
+  if (qualityCache.has(streamObj.url)) {
+    renderQualityButtons(panel, streamObj, index, qualityCache.get(streamObj.url));
+    return;
+  }
+
+  fetch(`http://127.0.0.1:5000/qualities?url=${encodeURIComponent(streamObj.url)}`)
+    .then(r => r.json())
+    .then(data => {
+      if (data.error) {
+        panel.innerHTML = `<span style="font-size:11px;color:#dc3545;">❌ ${data.error}</span>`;
+        return;
+      }
+      qualityCache.set(streamObj.url, data.qualities);
+      renderQualityButtons(panel, streamObj, index, data.qualities);
+    })
+    .catch(() => {
+      panel.innerHTML = '<span style="font-size:11px;color:#dc3545;">❌ Serveur Python éteint 🔌</span>';
+    });
+}
+
+function renderQualityButtons(panel, streamObj, index, qualities) {
+  panel.dataset.loaded = "1";
+  if (!qualities || qualities.length === 0) {
+    panel.innerHTML = '<span style="font-size:11px;color:#888;">Aucune qualité disponible</span>';
+    return;
+  }
+
+  panel.innerHTML = "";
+  qualities.forEach(q => {
+    const btn = document.createElement("button");
+    btn.innerText = q.label;
+    btn.style.cssText = "margin: 2px 4px 2px 0; padding: 4px 10px; font-size: 11px; border: 1px solid #1ab7ea; background: #fff; color: #1ab7ea; border-radius: 12px; cursor: pointer; font-weight: 600;";
+    btn.addEventListener("mouseenter", () => { btn.style.background = "#1ab7ea"; btn.style.color = "#fff"; });
+    btn.addEventListener("mouseleave", () => { btn.style.background = "#fff"; btn.style.color = "#1ab7ea"; });
+    btn.addEventListener("click", () => {
+      startDownload(streamObj, index, q.value);
+    });
+    panel.appendChild(btn);
+  });
+}
+
 function renderStreams(streams) {
   currentStreams = streams;
-  const listContainer    = document.getElementById("stream-list");
-  const clearBtn         = document.getElementById("clear-btn");
-  const downloadAllBtn   = document.getElementById("download-all-btn");
+  const listContainer  = document.getElementById("stream-list");
+  const clearBtn       = document.getElementById("clear-btn");
+  const downloadAllBtn = document.getElementById("download-all-btn");
 
   if (streams.length === 0) {
     listContainer.innerHTML = '<p class="no-streams">Aucune vidéo détectée. Lancez la lecture pour capturer.</p>';
@@ -107,7 +161,7 @@ function renderStreams(streams) {
     return;
   }
 
-  clearBtn.style.display = "inline-block";
+  clearBtn.style.display       = "inline-block";
   downloadAllBtn.style.display = streams.length >= 2 ? "inline-block" : "none";
   listContainer.innerHTML = "";
 
@@ -116,20 +170,22 @@ function renderStreams(streams) {
     item.className = "stream-item";
 
     let badgeColor = "#007bff";
-    if (streamObj.label.includes("LOOM"))         badgeColor = "#6200ee";
+    if (streamObj.label.includes("LOOM"))                                        badgeColor = "#6200ee";
     else if (streamObj.label.includes("YOUTUBE") || streamObj.label.includes("SHORT")) badgeColor = "#ff0000";
-    else if (streamObj.label.includes("VIMEO"))   badgeColor = "#1ab7ea";
-    else if (streamObj.label.includes("⭐"))       badgeColor = "#ffc107";
+    else if (streamObj.label.includes("VIMEO"))                                  badgeColor = "#1ab7ea";
+    else if (streamObj.label.includes("⭐"))                                      badgeColor = "#ffc107";
 
     item.innerHTML = `
       <div style="margin-bottom: 8px;">
-        <span style="background: ${badgeColor}; color: ${badgeColor === '#ffc107' ? '#000' : '#fff'}; padding: 4px 8px; border-radius: 4px; font-weight: bold; font-size: 11px; display: inline-block;">
+        <span style="background:${badgeColor}; color:${badgeColor==='#ffc107'?'#000':'#fff'}; padding:4px 8px; border-radius:4px; font-weight:bold; font-size:11px; display:inline-block;">
           ${streamObj.label}
         </span>
       </div>
-      <button id="copy-${index}" style="padding: 6px 12px; background: #f8f9fa; color: #333; border: 1px solid #ccc; border-radius: 4px; cursor: pointer; font-weight: 500;">Copy URL</button>
-      <button id="download-${index}" style="padding: 6px 12px; background: #28a745; color: white; border: none; border-radius: 4px; cursor: pointer; margin-left: 6px; font-weight: bold;">Download</button>
-      <div id="status-${index}" style="margin-top: 6px; font-size: 12px; color: #666; min-height: 16px;"></div>
+      <button id="copy-${index}" style="padding:6px 12px; background:#f8f9fa; color:#333; border:1px solid #ccc; border-radius:4px; cursor:pointer; font-weight:500;">Copy URL</button>
+      <button id="download-${index}" style="padding:6px 12px; background:#28a745; color:#fff; border:none; border-radius:4px; cursor:pointer; margin-left:6px; font-weight:bold;">⬇ Meilleure</button>
+      <button id="quality-toggle-${index}" style="padding:6px 10px; background:#fff; color:#555; border:1px solid #ccc; border-radius:4px; cursor:pointer; margin-left:4px; font-size:12px;">▾ Qualités</button>
+      <div id="quality-panel-${index}" style="display:none; margin-top:6px; padding:6px; background:#f8f9fa; border-radius:4px; border:1px solid #e9ecef;"></div>
+      <div id="status-${index}" style="margin-top:6px; font-size:12px; color:#666; min-height:16px;"></div>
     `;
     listContainer.appendChild(item);
 
@@ -140,15 +196,13 @@ function renderStreams(streams) {
     });
 
     const downloadBtn = document.getElementById(`download-${index}`);
-
     if (activeJobs.has(streamObj.url)) {
       downloadBtn.disabled = true;
-      const statusDiv = document.getElementById(`status-${index}`);
-      statusDiv.innerText = "⏳ Téléchargement en cours...";
-      statusDiv.style.color = "#666";
+      document.getElementById(`status-${index}`).innerText = "⏳ Téléchargement en cours...";
     }
 
-    downloadBtn.addEventListener("click", () => startDownload(streamObj, index));
+    downloadBtn.addEventListener("click", () => startDownload(streamObj, index, ""));
+    document.getElementById(`quality-toggle-${index}`).addEventListener("click", () => loadQualities(streamObj, index));
   });
 }
 
@@ -174,9 +228,7 @@ chrome.tabs.query({ active: true, currentWindow: true }, function(tabs) {
 
   document.getElementById("download-all-btn").addEventListener("click", () => {
     currentStreams.forEach((streamObj, index) => {
-      if (!activeJobs.has(streamObj.url)) {
-        startDownload(streamObj, index);
-      }
+      if (!activeJobs.has(streamObj.url)) startDownload(streamObj, index, "");
     });
   });
 });

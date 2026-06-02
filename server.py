@@ -9,6 +9,8 @@ import threading
 import queue
 import uuid
 import tempfile
+import urllib.request
+import urllib.parse
 from pathlib import Path
 
 app = Flask(__name__)
@@ -119,7 +121,7 @@ def run_loom(url_entree: str, fichier_sortie: str, q: queue.Queue):
             f.unlink()
 
 
-def run_youtube(url: str, fichier_sortie: str, q: queue.Queue) -> str:
+def run_youtube(url: str, fichier_sortie: str, q: queue.Queue, format_str: str = "") -> str:
     push(q, {"type": "progress", "label": "Récupération titre YouTube..."})
     try:
         result = subprocess.run(
@@ -132,14 +134,12 @@ def run_youtube(url: str, fichier_sortie: str, q: queue.Queue) -> str:
     except Exception:
         pass
 
-    # Téléchargement vers un chemin ASCII pur (UUID) pour éviter les erreurs de merge
-    # sur Windows quand le titre contient des accents (WinError 2 sur les fichiers .fXXX.m4a)
     temp_output = str(TEMP_DIR / f"{uuid.uuid4()}.mp4")
+    fmt = format_str or "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
 
     push(q, {"type": "progress", "label": "Téléchargement YouTube...", "percent": 0})
     process = subprocess.Popen(
-        ["yt-dlp",
-         "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+        ["yt-dlp", "-f", fmt,
          "--merge-output-format", "mp4",
          "--no-playlist",
          "-o", temp_output,
@@ -158,7 +158,6 @@ def run_youtube(url: str, fichier_sortie: str, q: queue.Queue) -> str:
         context = "".join(out_buf[-8:]).strip()
         raise subprocess.CalledProcessError(process.returncode, "yt-dlp", stderr=context)
 
-    # Déplacement vers le nom final (avec accents) — shutil gère l'Unicode correctement
     shutil.move(temp_output, fichier_sortie)
     return fichier_sortie
 
@@ -204,7 +203,7 @@ def _update_job(job_id: str, **kwargs):
             _jobs[job_id].update(kwargs)
 
 
-def download_worker(job_id: str, url: str, fichier_sortie: str):
+def download_worker(job_id: str, url: str, fichier_sortie: str, format_str: str = ""):
     with _jobs_lock:
         job = _jobs.get(job_id)
     if job is None:
@@ -214,11 +213,12 @@ def download_worker(job_id: str, url: str, fichier_sortie: str):
         if "loom.com" in url:
             run_loom(url, fichier_sortie, q)
         elif "youtube.com" in url or "youtu.be" in url:
-            fichier_sortie = run_youtube(url, fichier_sortie, q)
+            fichier_sortie = run_youtube(url, fichier_sortie, q, format_str)
         elif "vimeocdn.com" in url or "vimeo.com" in url:
-            run_vimeo(url, fichier_sortie, q)
+            # format_str peut être une URL de variante HLS spécifique
+            run_vimeo(format_str if format_str.startswith("http") else url, fichier_sortie, q)
         else:
-            run_skool(url, fichier_sortie, q)
+            run_skool(format_str if format_str.startswith("http") else url, fichier_sortie, q)
 
         if os.path.exists(fichier_sortie):
             fname = os.path.basename(fichier_sortie)
@@ -244,11 +244,97 @@ def download_worker(job_id: str, url: str, fichier_sortie: str):
         push(q, {"type": "error", "message": str(e)})
 
 
+@app.route("/qualities", methods=["GET"])
+def get_qualities():
+    url = request.args.get("url", "").strip()
+    if not url:
+        return jsonify({"error": "URL manquante"}), 400
+    try:
+        # YouTube / Shorts
+        if "youtube.com" in url or "youtu.be" in url:
+            result = subprocess.run(
+                ["yt-dlp", "--dump-json", "--no-playlist", url],
+                capture_output=True, text=True, timeout=20,
+                encoding="utf-8", errors="replace"
+            )
+            info = json.loads(result.stdout)
+            seen = set()
+            qualities = []
+            for f in reversed(info.get("formats", [])):
+                h = f.get("height")
+                if not h or f.get("vcodec", "none") == "none":
+                    continue
+                if h in seen:
+                    continue
+                seen.add(h)
+                fmt = (f"bestvideo[height={h}][ext=mp4]+bestaudio[ext=m4a]"
+                       f"/bestvideo[height={h}]+bestaudio/best[height<={h}]")
+                qualities.append({"label": f"{h}p", "value": fmt, "height": h})
+            qualities.sort(key=lambda x: x["height"], reverse=True)
+            return jsonify({"platform": "youtube", "qualities": qualities[:8]})
+
+        # Loom — bitrates fixes
+        if "loom.com" in url:
+            base = re.sub(r"mediaplaylist-video-bitrate\d+\.m3u8.*", "", url)
+            qs = "?" + url.split("?")[1] if "?" in url else ""
+            qualities = [
+                {"label": "3200k (HD)", "value": f"{base}mediaplaylist-video-bitrate3200.m3u8{qs}"},
+                {"label": "1800k",      "value": f"{base}mediaplaylist-video-bitrate1800.m3u8{qs}"},
+                {"label": "700k",       "value": f"{base}mediaplaylist-video-bitrate700.m3u8{qs}"},
+            ]
+            return jsonify({"platform": "loom", "qualities": qualities})
+
+        # Skool / Vimeo — master HLS playlist
+        req = urllib.request.Request(url)
+        req.add_header("User-Agent", USER_AGENT)
+        if not "vimeocdn.com" in url:
+            req.add_header("Origin", "https://www.skool.com")
+            req.add_header("Referer", "https://www.skool.com/")
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            content = resp.read().decode("utf-8", errors="replace")
+
+        qualities = []
+        lines = content.strip().splitlines()
+        for i, line in enumerate(lines):
+            line = line.strip()
+            if not line.startswith("#EXT-X-STREAM-INF"):
+                continue
+            res_m = re.search(r"RESOLUTION=(\d+)x(\d+)", line)
+            bw_m  = re.search(r"BANDWIDTH=(\d+)", line)
+            # next non-comment line = variant URL
+            variant = next((lines[j].strip() for j in range(i+1, len(lines))
+                            if lines[j].strip() and not lines[j].startswith("#")), "")
+            if not variant:
+                continue
+            if not variant.startswith("http"):
+                variant = urllib.parse.urljoin(url, variant)
+            h  = int(res_m.group(2)) if res_m else 0
+            bw = int(bw_m.group(1))  if bw_m  else 0
+            qualities.append({"label": f"{h}p" if h else f"{bw//1000}k",
+                               "value": variant, "height": h, "bandwidth": bw})
+
+        qualities.sort(key=lambda x: x["bandwidth"], reverse=True)
+        # Dédupliquer par label (au cas où plusieurs variants ont la même résolution)
+        seen_labels, unique = set(), []
+        for q in qualities:
+            if q["label"] not in seen_labels:
+                seen_labels.add(q["label"])
+                unique.append(q)
+
+        platform = "vimeo" if "vimeocdn.com" in url else "skool"
+        return jsonify({"platform": platform, "qualities": unique or
+                        [{"label": "Meilleure qualité", "value": url}]})
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/download", methods=["POST"])
 def download():
     data = request.json or {}
     url = data.get("url", "").strip()
     title = data.get("title", "")
+    format_str = data.get("format", "").strip()
 
     if not url:
         return jsonify({"status": "error", "message": "URL manquante"}), 400
@@ -262,7 +348,7 @@ def download():
     fichier_sortie = unique_path(stem)
 
     threading.Thread(
-        target=download_worker, args=(job_id, url, fichier_sortie), daemon=True
+        target=download_worker, args=(job_id, url, fichier_sortie, format_str), daemon=True
     ).start()
 
     return jsonify({"job_id": job_id})
