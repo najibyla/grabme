@@ -163,12 +163,27 @@ def run_youtube(url: str, fichier_sortie: str, q: queue.Queue, format_str: str =
 
 
 def run_vimeo(url_entree: str, fichier_sortie: str, q: queue.Queue):
-    """URLs vimeocdn.com sont pré-signées — FFmpeg peut les lire directement."""
+    """Vimeo CDN : vidéo et audio dans des playlists HLS séparées (sep/video / sep/audio).
+    Si l'URL est une variant vidéo, on dérive l'URL audio depuis le même chemin CDN
+    (même query string / signature CloudFront, seul le segment de chemin change).
+    """
     push(q, {"type": "progress", "label": "Téléchargement Vimeo..."})
-    cmd = ["ffmpeg",
-           "-i", url_entree,
-           "-map", "0:v:0?", "-map", "0:a:0?",
-           "-c", "copy", "-y", fichier_sortie]
+
+    if "/sep/video/" in url_entree:
+        # Variant vidéo seule → dériver l'URL de la playlist audio associée
+        audio_url = re.sub(r"/sep/video/[^/]+/", "/sep/audio/default/", url_entree)
+        cmd = ["ffmpeg",
+               "-i", url_entree,   # vidéo
+               "-i", audio_url,    # audio (même session CDN, chemin différent)
+               "-map", "0:v:0?",
+               "-map", "1:a:0?",
+               "-c", "copy", "-y", fichier_sortie]
+    else:
+        # Master playlist — FFmpeg résout EXT-X-MEDIA et inclut l'audio automatiquement
+        cmd = ["ffmpeg",
+               "-i", url_entree,
+               "-c", "copy", "-y", fichier_sortie]
+
     run_ffmpeg(cmd, q)
 
 

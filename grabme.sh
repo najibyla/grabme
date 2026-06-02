@@ -41,9 +41,17 @@ fi
 # ─── Vimeo (vimeocdn.com — URLs pré-signées CDN) ────────────────────────────
 if [[ "$URL" == *"vimeocdn.com"* ]]; then
     echo "🎬 Détection Vimeo — téléchargement via FFmpeg"
-    ffmpeg -i "$URL" \
-           -map 0:v:0 -map 0:a:0 \
-           -c copy -y "$OUTPUT"
+    if [[ "$URL" == *"/sep/video/"* ]]; then
+        # Variant vidéo seule → dériver l'URL audio (même signature CDN)
+        AUDIO_URL=$(echo "$URL" | sed 's|/sep/video/[^/]*/|/sep/audio/default/|')
+        echo "🔀 Fusion audio/vidéo Vimeo..."
+        ffmpeg -i "$URL" -i "$AUDIO_URL" \
+               -map 0:v:0 -map 1:a:0 \
+               -c copy -y "$OUTPUT"
+    else
+        # Master playlist — FFmpeg gère EXT-X-MEDIA automatiquement
+        ffmpeg -i "$URL" -c copy -y "$OUTPUT"
+    fi
     [ $? -eq 0 ] && echo "✅ Vidéo sauvegardée : $OUTPUT" || echo "❌ Échec FFmpeg."
     exit $?
 fi

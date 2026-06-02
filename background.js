@@ -55,6 +55,10 @@ chrome.webRequest.onBeforeRequest.addListener(
     // Utilise le titre envoyé par content.js depuis l'iframe player.vimeo.com
     // (plus précis que le titre de l'onglet parent qui affiche le nom du site)
     if (url.includes("vimeocdn.com") && url.includes(".m3u8")) {
+      // Ignorer les playlists audio seules — le serveur les dérive automatiquement
+      // depuis l'URL vidéo (/sep/video/ → /sep/audio/default/)
+      if (url.includes("/sep/audio/")) return;
+
       const titleKey = `vimeo_current_title_${tabId}`;
       chrome.storage.local.get([titleKey], (result) => {
         const stored = result[titleKey];

@@ -56,9 +56,17 @@ if !errorlevel! equ 0 (
 echo !URL! | findstr /i "vimeocdn.com" >nul 2>&1
 if !errorlevel! equ 0 (
     echo Vimeo detecte — telechargement via FFmpeg
-    ffmpeg -i "!URL!" ^
-           -map 0:v:0 -map 0:a:0 ^
-           -c copy -y "!OUTPUT!"
+    echo !URL! | findstr /i "/sep/video/" >nul 2>&1
+    if !errorlevel! equ 0 (
+        echo Fusion audio/video Vimeo...
+        :: Deriver l'URL audio depuis l'URL video (meme signature CDN)
+        for /f "tokens=*" %%i in ('python -c "import re,sys; u=sys.argv[1]; print(re.sub(r'/sep/video/[^/]+/', '/sep/audio/default/', u))" "!URL!"') do set "AUDIO_URL=%%i"
+        ffmpeg -i "!URL!" -i "!AUDIO_URL!" ^
+               -map 0:v:0 -map 1:a:0 ^
+               -c copy -y "!OUTPUT!"
+    ) else (
+        ffmpeg -i "!URL!" -c copy -y "!OUTPUT!"
+    )
     goto :done
 )
 
