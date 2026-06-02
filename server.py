@@ -168,7 +168,7 @@ def run_vimeo(url_entree: str, fichier_sortie: str, q: queue.Queue):
     push(q, {"type": "progress", "label": "Téléchargement Vimeo..."})
     cmd = ["ffmpeg",
            "-i", url_entree,
-           "-map", "0:V?", "-map", "0:a?",
+           "-map", "0:v:0?", "-map", "0:a:0?",
            "-c", "copy", "-y", fichier_sortie]
     run_ffmpeg(cmd, q)
 
@@ -180,8 +180,8 @@ def run_skool(url_entree: str, fichier_sortie: str, q: queue.Queue):
          "-user_agent", USER_AGENT,
          "-headers", "Origin: https://www.skool.com\r\nReferer: https://www.skool.com/\r\n",
          "-i", url_entree,
-         "-map", "0:V?",   # vidéo seulement (exclut WebVTT/sous-titres qui cassent MP4)
-         "-map", "0:a?",   # audio seulement — ? = optionnel (audio-only streams OK)
+         "-map", "0:v:0?",  # première piste vidéo uniquement (évite les I-frame tracks HLS)
+         "-map", "0:a:0?", # première piste audio uniquement
          "-c", "copy", "-y", fichier_sortie],
         stderr=subprocess.PIPE,
         universal_newlines=True, encoding="utf-8", errors="replace"
