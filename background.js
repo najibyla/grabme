@@ -22,6 +22,22 @@ chrome.webRequest.onBeforeRequest.addListener(
 
     let typeLabel = "";
     let downloadUrl = url;
+    const reqType = details.type; // "main_frame", "sub_frame", "xmlhttprequest", …
+
+    // --- DETECTION YOUTUBE / SHORTS (navigation directe, main_frame) ---
+    // Filet de sécurité : tabs.onUpdated peut rater la navigation SPA YouTube
+    if (reqType === "main_frame" &&
+        (url.includes("youtube.com/watch?") || url.includes("youtube.com/shorts/"))) {
+      const ytId = extractYouTubeId(url);
+      if (ytId) {
+        const videoUrl = `https://www.youtube.com/watch?v=${ytId}`;
+        const isShort  = url.includes("youtube.com/shorts/");
+        const prefix   = isShort ? "▶️ SHORT" : "▶️ YOUTUBE";
+        storeStream(tabId, { url: videoUrl, label: `${prefix} - ⏳` }, true);
+        chrome.storage.local.set({ [`yt_pending_${tabId}`]: { videoUrl, prefix } });
+      }
+      return;
+    }
 
     // --- DETECTION LOOM ---
     if (url.includes("loom.com")) {

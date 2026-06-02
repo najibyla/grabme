@@ -13,7 +13,7 @@ function titleFromStream(streamObj) {
   return currentTab ? currentTab.title : "video";
 }
 
-function startDownload(streamObj, index, formatValue) {
+function startDownload(streamObj, index, formatValue, audioUrlFromQuality) {
   if (activeJobs.has(streamObj.url)) return;
 
   const statusDiv   = document.getElementById(`status-${index}`);
@@ -32,7 +32,11 @@ function startDownload(streamObj, index, formatValue) {
   const streamsKey = `streams_${currentTab.id}`;
   chrome.storage.local.get([streamsKey], (result) => {
     const fresh = (result[streamsKey] || []).find(s => s.url === streamObj.url);
-    const audioUrl = (fresh && fresh.audioUrl) ? fresh.audioUrl : (streamObj.audioUrl || "");
+    // Priorité : audioUrl du bouton qualité > audioUrl stocké en temps réel > fallback stream
+    const audioUrl = audioUrlFromQuality
+      || (fresh && fresh.audioUrl)
+      || streamObj.audioUrl
+      || "";
 
     fetch("http://127.0.0.1:5000/download", {
       method: "POST",
@@ -150,7 +154,7 @@ function renderQualityButtons(panel, streamObj, index, qualities) {
     btn.addEventListener("mouseenter", () => { btn.style.background = "#1ab7ea"; btn.style.color = "#fff"; });
     btn.addEventListener("mouseleave", () => { btn.style.background = "#fff"; btn.style.color = "#1ab7ea"; });
     btn.addEventListener("click", () => {
-      startDownload(streamObj, index, q.value);
+      startDownload(streamObj, index, q.value, q.audioUrl || "");
     });
     panel.appendChild(btn);
   });

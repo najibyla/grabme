@@ -187,17 +187,24 @@ def run_vimeo(url_entree: str, fichier_sortie: str, q: queue.Queue, audio_url: s
     run_ffmpeg(cmd, q)
 
 
-def run_skool(url_entree: str, fichier_sortie: str, q: queue.Queue):
+SKOOL_HEADERS = "Origin: https://www.skool.com\r\nReferer: https://www.skool.com/\r\n"
+
+
+def run_skool(url_entree: str, fichier_sortie: str, q: queue.Queue, audio_url: str = ""):
     push(q, {"type": "progress", "label": "Téléchargement Skool..."})
+    # Options HTTP communes (per-input en FFmpeg 8.x)
+    http_opts = ["-user_agent", USER_AGENT, "-headers", SKOOL_HEADERS]
+    if audio_url:
+        cmd = ["ffmpeg"] + http_opts + ["-i", url_entree] \
+                         + http_opts + ["-i", audio_url,
+                                        "-map", "0:v:0?", "-map", "1:a:0?",
+                                        "-c", "copy", "-y", fichier_sortie]
+    else:
+        cmd = ["ffmpeg"] + http_opts + ["-i", url_entree,
+                                        "-map", "0:v:0?", "-map", "0:a:0?",
+                                        "-c", "copy", "-y", fichier_sortie]
     process = subprocess.Popen(
-        ["ffmpeg",
-         "-user_agent", USER_AGENT,
-         "-headers", "Origin: https://www.skool.com\r\nReferer: https://www.skool.com/\r\n",
-         "-i", url_entree,
-         "-map", "0:v:0?",  # première piste vidéo uniquement (évite les I-frame tracks HLS)
-         "-map", "0:a:0?", # première piste audio uniquement
-         "-c", "copy", "-y", fichier_sortie],
-        stderr=subprocess.PIPE,
+        cmd, stderr=subprocess.PIPE,
         universal_newlines=True, encoding="utf-8", errors="replace"
     )
     stderr_buf = []
@@ -233,7 +240,8 @@ def download_worker(job_id: str, url: str, fichier_sortie: str, format_str: str 
             actual = format_str if format_str.startswith("http") else url
             run_vimeo(actual, fichier_sortie, q, audio_url)
         else:
-            run_skool(format_str if format_str.startswith("http") else url, fichier_sortie, q)
+            actual = format_str if format_str.startswith("http") else url
+            run_skool(actual, fichier_sortie, q, audio_url)
 
         if os.path.exists(fichier_sortie):
             fname = os.path.basename(fichier_sortie)
@@ -302,11 +310,33 @@ def get_qualities():
         # Skool / Vimeo — master HLS playlist
         req = urllib.request.Request(url)
         req.add_header("User-Agent", USER_AGENT)
-        if not "vimeocdn.com" in url:
+        is_vimeo = "vimeocdn.com" in url
+        if not is_vimeo:
             req.add_header("Origin", "https://www.skool.com")
             req.add_header("Referer", "https://www.skool.com/")
         with urllib.request.urlopen(req, timeout=10) as resp:
             content = resp.read().decode("utf-8", errors="replace")
+
+        # Préserver le query string du master (tokens CloudFront) lors de la résolution
+        # des URLs relatives — urljoin seul supprime le query string de la base
+        parsed_master = urllib.parse.urlparse(url)
+        master_qs = ("?" + parsed_master.query) if parsed_master.query else ""
+        master_base = urllib.parse.urlunparse(parsed_master._replace(query="", fragment=""))
+
+        def resolve(rel):
+            if rel.startswith("http"):
+                return rel
+            return urllib.parse.urljoin(master_base, rel) + master_qs
+
+        # Extraire l'URL audio depuis EXT-X-MEDIA (groupe audio séparé)
+        audio_uri = ""
+        for raw in content.strip().splitlines():
+            raw = raw.strip()
+            if raw.startswith("#EXT-X-MEDIA") and "TYPE=AUDIO" in raw:
+                m_uri = re.search(r'URI="([^"]+)"', raw)
+                if m_uri:
+                    audio_uri = resolve(m_uri.group(1))
+                    break
 
         qualities = []
         lines = content.strip().splitlines()
@@ -316,29 +346,27 @@ def get_qualities():
                 continue
             res_m = re.search(r"RESOLUTION=(\d+)x(\d+)", line)
             bw_m  = re.search(r"BANDWIDTH=(\d+)", line)
-            # next non-comment line = variant URL
-            variant = next((lines[j].strip() for j in range(i+1, len(lines))
-                            if lines[j].strip() and not lines[j].startswith("#")), "")
-            if not variant:
+            variant_raw = next((lines[j].strip() for j in range(i+1, len(lines))
+                                if lines[j].strip() and not lines[j].startswith("#")), "")
+            if not variant_raw:
                 continue
-            if not variant.startswith("http"):
-                variant = urllib.parse.urljoin(url, variant)
+            variant = resolve(variant_raw)
             h  = int(res_m.group(2)) if res_m else 0
             bw = int(bw_m.group(1))  if bw_m  else 0
             qualities.append({"label": f"{h}p" if h else f"{bw//1000}k",
-                               "value": variant, "height": h, "bandwidth": bw})
+                               "value": variant, "audioUrl": audio_uri,
+                               "height": h, "bandwidth": bw})
 
         qualities.sort(key=lambda x: x["bandwidth"], reverse=True)
-        # Dédupliquer par label (au cas où plusieurs variants ont la même résolution)
         seen_labels, unique = set(), []
         for q in qualities:
             if q["label"] not in seen_labels:
                 seen_labels.add(q["label"])
                 unique.append(q)
 
-        platform = "vimeo" if "vimeocdn.com" in url else "skool"
+        platform = "vimeo" if is_vimeo else "skool"
         return jsonify({"platform": platform, "qualities": unique or
-                        [{"label": "Meilleure qualité", "value": url}]})
+                        [{"label": "Meilleure qualité", "value": url, "audioUrl": ""}]})
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
