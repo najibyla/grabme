@@ -116,8 +116,8 @@ function renderStreams(streams) {
     item.className = "stream-item";
 
     let badgeColor = "#007bff";
-    if (streamObj.label.includes("LOOM"))        badgeColor = "#6200ee";
-    else if (streamObj.label.includes("YOUTUBE")) badgeColor = "#ff0000";
+    if (streamObj.label.includes("LOOM"))         badgeColor = "#6200ee";
+    else if (streamObj.label.includes("YOUTUBE") || streamObj.label.includes("SHORT")) badgeColor = "#ff0000";
     else if (streamObj.label.includes("VIMEO"))   badgeColor = "#1ab7ea";
     else if (streamObj.label.includes("⭐"))       badgeColor = "#ffc107";
 

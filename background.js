@@ -103,6 +103,8 @@ function extractYouTubeId(url) {
   if (m) return m[1];
   m = url.match(/youtu\.be\/([a-zA-Z0-9_-]{11})/);
   if (m) return m[1];
+  m = url.match(/youtube\.com\/shorts\/([a-zA-Z0-9_-]{11})/);
+  if (m) return m[1];
   return null;
 }
 
@@ -118,13 +120,15 @@ chrome.tabs.onUpdated.addListener(function(tabId, changeInfo) {
 
   // Auto-détecter les onglets YouTube directs
   const ytId = extractYouTubeId(changeInfo.url);
-  if (ytId && (changeInfo.url.includes("youtube.com/watch") || changeInfo.url.includes("youtu.be/"))) {
+  if (ytId && (changeInfo.url.includes("youtube.com/watch") || changeInfo.url.includes("youtu.be/") || changeInfo.url.includes("youtube.com/shorts/"))) {
     const videoUrl = `https://www.youtube.com/watch?v=${ytId}`;
     setTimeout(() => {
       chrome.tabs.get(tabId, (t) => {
         if (chrome.runtime.lastError) return;
-        const title = (t && t.title && !t.title.includes("youtube.com")) ? t.title : "Vidéo YouTube";
-        storeStream(tabId, { url: videoUrl, label: `▶️ YOUTUBE - ${title}` }, true);
+        const isShort = changeInfo.url.includes("youtube.com/shorts/");
+        const title = (t && t.title && !t.title.includes("youtube.com")) ? t.title : (isShort ? "Short YouTube" : "Vidéo YouTube");
+        const prefix = isShort ? "▶️ SHORT" : "▶️ YOUTUBE";
+        storeStream(tabId, { url: videoUrl, label: `${prefix} - ${title}` }, true);
       });
     }, 1500);
   }
