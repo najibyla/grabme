@@ -187,15 +187,17 @@ Naviguer sur `youtube.com/watch?v=...` ou `youtube.com/shorts/...` suffit — l'
 
 | Version | Commit | Changements |
 |---|---|---|
-| 1.3 | `ff1dedd` | Sélection de résolution (endpoint `/qualities`), support yt-dlp format selector, HLS master parsing |
-| 1.2 | `e62c656` | Vimeo titles depuis iframe (`all_frames`), téléchargement en arrière-plan (alarms + notifications), bouton "Tout télécharger" |
+| 1.3.2 | `390d3f8` | Fix titre Vimeo "LocalStorage Proxy" ; fix Shorts MV3 (setTimeout → changeInfo.title) |
+| 1.3 | `ff1dedd` | Sélection de résolution (endpoint `/qualities`), yt-dlp format selector, HLS master parsing |
+| 1.2 | `e62c656` | Vimeo titles depuis iframe (`all_frames`), téléchargement arrière-plan (alarms + notifications), "Tout télécharger" |
 | 1.1 | `62f20ba` | Détection YouTube direct, refresh titre Vimeo, branding GrabMe, badge couleur Vimeo |
 | 1.0 | `151a211` | Version initiale — Skool, Loom, YouTube embed, Vimeo ; SSE progression ; protection double-clic |
 
 ### Correctifs notables
 
+- **Vimeo titre "Vimeo Player LocalStorage Proxy"** (`390d3f8`) : Vimeo crée une iframe cachée pour le bridge localStorage ; content.js (all_frames) la capturait et envoyait ce mauvais titre → filtré dans `BAD_TITLES` (content.js et background.js)
+- **YouTube Shorts non détectés** (`390d3f8`) : `setTimeout(1500ms)` dans les service workers MV3 est non fiable (Chrome peut endormir le SW avant le fire) → remplacé par `changeInfo.title` natif de `tabs.onUpdated`
 - **VLC ouvre 3 fenêtres** (`ac38d50`) : `-map 0:V` copiait les I-frame tracks HLS auxiliaires → corrigé en `-map 0:v:0`
-- **YouTube Shorts** (`1f3354d`) : ajout du pattern `/shorts/` dans la détection
 - **Loom "Audio Seul"** (v1.0) : URL vidéo dérivée depuis l'URL audio quand la vidéo est en cache navigateur
 - **WinError 2 YouTube accents** (v1.0) : téléchargement vers chemin UUID temporaire + `shutil.move`
 - **Skool WebVTT** (v1.0) : `-map 0:v:0` exclut les sous-titres WebVTT incompatibles avec MP4
