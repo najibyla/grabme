@@ -187,6 +187,7 @@ Naviguer sur `youtube.com/watch?v=...` ou `youtube.com/shorts/...` suffit — l'
 
 | Version | Commit | Changements |
 |---|---|---|
+| 1.4 | `292d2a7` | Fix quality picker audio (Skool/Vimeo) ; YouTube/Shorts détection fiabilisée (webRequest main_frame) |
 | 1.3.2 | `390d3f8` | Fix titre Vimeo "LocalStorage Proxy" ; fix Shorts MV3 (setTimeout → changeInfo.title) |
 | 1.3 | `ff1dedd` | Sélection de résolution (endpoint `/qualities`), yt-dlp format selector, HLS master parsing |
 | 1.2 | `e62c656` | Vimeo titles depuis iframe (`all_frames`), téléchargement arrière-plan (alarms + notifications), "Tout télécharger" |
@@ -195,12 +196,15 @@ Naviguer sur `youtube.com/watch?v=...` ou `youtube.com/shorts/...` suffit — l'
 
 ### Correctifs notables
 
-- **Vimeo titre "Vimeo Player LocalStorage Proxy"** (`390d3f8`) : Vimeo crée une iframe cachée pour le bridge localStorage ; content.js (all_frames) la capturait et envoyait ce mauvais titre → filtré dans `BAD_TITLES` (content.js et background.js)
-- **YouTube Shorts non détectés** (`390d3f8`) : `setTimeout(1500ms)` dans les service workers MV3 est non fiable (Chrome peut endormir le SW avant le fire) → remplacé par `changeInfo.title` natif de `tabs.onUpdated`
-- **VLC ouvre 3 fenêtres** (`ac38d50`) : `-map 0:V` copiait les I-frame tracks HLS auxiliaires → corrigé en `-map 0:v:0`
-- **Loom "Audio Seul"** (v1.0) : URL vidéo dérivée depuis l'URL audio quand la vidéo est en cache navigateur
-- **WinError 2 YouTube accents** (v1.0) : téléchargement vers chemin UUID temporaire + `shutil.move`
-- **Skool WebVTT** (v1.0) : `-map 0:v:0` exclut les sous-titres WebVTT incompatibles avec MP4
+- **Quality picker sans audio (Skool/Vimeo)** (`292d2a7`) : `urllib.parse.urljoin` supprimait le query string CloudFront lors de la résolution des URLs relatives dans le master HLS → tokens d'auth perdus → 403 silencieux → video-only. Corrigé par préservation du query string + extraction de l'URL audio EXT-X-MEDIA incluse dans chaque quality option.
+- **YouTube/Shorts non détectés** (`292d2a7`) : détection ajoutée dans le webRequest listener pour les requêtes `main_frame` (sécurité supplémentaire quand `tabs.onUpdated` ne fire pas pour la navigation SPA).
+- **Vimeo sans audio** (`4f9184e`) : background.js capture l'URL `/sep/audio/` réelle et l'attache au stream vidéo (`audioUrl` field) ; run_vimeo utilise dual-input FFmpeg quand audioUrl est fourni.
+- **Vimeo I-frame tracks** (`4f9184e`) : URLs contenant `iframe` filtrées (206 kbit/s, pas d'audio).
+- **Vimeo titre "LocalStorage Proxy"** (`390d3f8`) : filtré dans `BAD_TITLES` (content.js et background.js).
+- **VLC ouvre 3 fenêtres** (`ac38d50`) : `-map 0:V` copiait les I-frame tracks HLS → corrigé en `-map 0:v:0`.
+- **Loom "Audio Seul"** (v1.0) : URL vidéo dérivée depuis l'URL audio quand la vidéo est en cache navigateur.
+- **WinError 2 YouTube accents** (v1.0) : téléchargement vers chemin UUID temporaire + `shutil.move`.
+- **Skool WebVTT** (v1.0) : `-map 0:v:0` exclut les sous-titres WebVTT incompatibles avec MP4.
 
 ---
 
