@@ -1,17 +1,114 @@
 let currentTab = null;
 const activeJobs = new Map(); // url -> EventSource en cours
+let currentStreams = [];       // référence pour "Tout télécharger"
+
+// Extrait un titre propre depuis le label du stream (pour le nom de fichier)
+function titleFromStream(streamObj) {
+  const m = streamObj.label.match(/(?:VIMEO|YOUTUBE|LOOM)\s*-\s*(.+)$/i);
+  if (m) {
+    const extracted = m[1].trim();
+    // Ignorer les labels génériques de plateforme
+    if (!/^(vidéo|video|direct|embed|native|sous-playlist|audio|master)/i.test(extracted)) {
+      return extracted;
+    }
+  }
+  return currentTab ? currentTab.title : "video";
+}
+
+function startDownload(streamObj, index) {
+  if (activeJobs.has(streamObj.url)) return;
+
+  const statusDiv  = document.getElementById(`status-${index}`);
+  const downloadBtn = document.getElementById(`download-${index}`);
+  if (!statusDiv || !downloadBtn) return;
+
+  downloadBtn.disabled = true;
+  statusDiv.style.color = "#666";
+  statusDiv.innerText = "⏳ Connexion au serveur...";
+
+  fetch("http://127.0.0.1:5000/download", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url: streamObj.url, title: titleFromStream(streamObj) })
+  })
+  .then(res => res.json())
+  .then(data => {
+    if (!data.job_id) {
+      statusDiv.innerText = "❌ " + (data.message || "Erreur inconnue");
+      statusDiv.style.color = "#dc3545";
+      downloadBtn.disabled = false;
+      return;
+    }
+
+    // Déléguer le suivi au service worker — le téléchargement continue même si le popup se ferme
+    chrome.runtime.sendMessage({
+      action: "trackJob",
+      jobId: data.job_id,
+      title: titleFromStream(streamObj)
+    });
+
+    const evtSource = new EventSource(`http://127.0.0.1:5000/progress/${data.job_id}`);
+    activeJobs.set(streamObj.url, evtSource);
+
+    evtSource.onmessage = (e) => {
+      const msg = JSON.parse(e.data);
+      if (msg.type === "ping") return;
+
+      if (msg.type === "progress") {
+        if (msg.percent !== undefined) {
+          statusDiv.innerText = `⏳ ${msg.percent}%`;
+        } else if (msg.label && msg.time) {
+          statusDiv.innerText = `⏳ ${msg.label} — ${msg.time}`;
+        } else if (msg.label) {
+          statusDiv.innerText = `⏳ ${msg.label}`;
+        } else if (msg.time) {
+          statusDiv.innerText = `⏳ ${msg.time}`;
+        }
+      } else if (msg.type === "done") {
+        statusDiv.innerText = `✅ ${msg.filename}`;
+        statusDiv.style.color = "#28a745";
+        evtSource.close();
+        activeJobs.delete(streamObj.url);
+        downloadBtn.disabled = false;
+      } else if (msg.type === "error") {
+        statusDiv.innerText = `❌ ${msg.message}`;
+        statusDiv.style.color = "#dc3545";
+        evtSource.close();
+        activeJobs.delete(streamObj.url);
+        downloadBtn.disabled = false;
+      }
+    };
+
+    evtSource.onerror = () => {
+      // Le popup s'est fermé ou la connexion SSE a été coupée — le téléchargement
+      // continue côté serveur ; le service worker enverra une notification à la fin
+      evtSource.close();
+      activeJobs.delete(streamObj.url);
+      downloadBtn.disabled = false;
+    };
+  })
+  .catch(() => {
+    statusDiv.innerText = "❌ Serveur Python éteint 🔌";
+    statusDiv.style.color = "#dc3545";
+    downloadBtn.disabled = false;
+  });
+}
 
 function renderStreams(streams) {
-  const listContainer = document.getElementById("stream-list");
-  const clearBtn = document.getElementById("clear-btn");
+  currentStreams = streams;
+  const listContainer    = document.getElementById("stream-list");
+  const clearBtn         = document.getElementById("clear-btn");
+  const downloadAllBtn   = document.getElementById("download-all-btn");
 
   if (streams.length === 0) {
     listContainer.innerHTML = '<p class="no-streams">Aucune vidéo détectée. Lancez la lecture pour capturer.</p>';
-    clearBtn.style.display = "none";
+    clearBtn.style.display       = "none";
+    downloadAllBtn.style.display = "none";
     return;
   }
 
   clearBtn.style.display = "inline-block";
+  downloadAllBtn.style.display = streams.length >= 2 ? "inline-block" : "none";
   listContainer.innerHTML = "";
 
   streams.forEach((streamObj, index) => {
@@ -19,15 +116,10 @@ function renderStreams(streams) {
     item.className = "stream-item";
 
     let badgeColor = "#007bff";
-    if (streamObj.label.includes("LOOM")) {
-      badgeColor = "#6200ee";
-    } else if (streamObj.label.includes("YOUTUBE")) {
-      badgeColor = "#ff0000";
-    } else if (streamObj.label.includes("VIMEO")) {
-      badgeColor = "#1ab7ea";
-    } else if (streamObj.label.includes("⭐")) {
-      badgeColor = "#ffc107";
-    }
+    if (streamObj.label.includes("LOOM"))        badgeColor = "#6200ee";
+    else if (streamObj.label.includes("YOUTUBE")) badgeColor = "#ff0000";
+    else if (streamObj.label.includes("VIMEO"))   badgeColor = "#1ab7ea";
+    else if (streamObj.label.includes("⭐"))       badgeColor = "#ffc107";
 
     item.innerHTML = `
       <div style="margin-bottom: 8px;">
@@ -49,7 +141,6 @@ function renderStreams(streams) {
 
     const downloadBtn = document.getElementById(`download-${index}`);
 
-    // Restaurer l'état si ce stream est déjà en cours de téléchargement
     if (activeJobs.has(streamObj.url)) {
       downloadBtn.disabled = true;
       const statusDiv = document.getElementById(`status-${index}`);
@@ -57,73 +148,7 @@ function renderStreams(streams) {
       statusDiv.style.color = "#666";
     }
 
-    downloadBtn.addEventListener("click", () => {
-      if (activeJobs.has(streamObj.url)) return; // protection double-clic
-      const statusDiv = document.getElementById(`status-${index}`);
-      downloadBtn.disabled = true;
-      statusDiv.style.color = "#666";
-      statusDiv.innerText = "⏳ Connexion au serveur...";
-
-      fetch("http://127.0.0.1:5000/download", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url: streamObj.url, title: currentTab.title })
-      })
-      .then(res => res.json())
-      .then(data => {
-        if (!data.job_id) {
-          statusDiv.innerText = "❌ " + (data.message || "Erreur inconnue");
-          statusDiv.style.color = "#dc3545";
-          downloadBtn.disabled = false;
-          return;
-        }
-
-        const evtSource = new EventSource(`http://127.0.0.1:5000/progress/${data.job_id}`);
-        activeJobs.set(streamObj.url, evtSource);
-
-        evtSource.onmessage = (e) => {
-          const msg = JSON.parse(e.data);
-          if (msg.type === "ping") return;
-
-          if (msg.type === "progress") {
-            if (msg.percent !== undefined) {
-              statusDiv.innerText = `⏳ ${msg.percent}%`;
-            } else if (msg.label && msg.time) {
-              statusDiv.innerText = `⏳ ${msg.label} — ${msg.time}`;
-            } else if (msg.label) {
-              statusDiv.innerText = `⏳ ${msg.label}`;
-            } else if (msg.time) {
-              statusDiv.innerText = `⏳ ${msg.time}`;
-            }
-          } else if (msg.type === "done") {
-            statusDiv.innerText = `✅ ${msg.filename}`;
-            statusDiv.style.color = "#28a745";
-            evtSource.close();
-            activeJobs.delete(streamObj.url);
-            downloadBtn.disabled = false;
-          } else if (msg.type === "error") {
-            statusDiv.innerText = `❌ ${msg.message}`;
-            statusDiv.style.color = "#dc3545";
-            evtSource.close();
-            activeJobs.delete(streamObj.url);
-            downloadBtn.disabled = false;
-          }
-        };
-
-        evtSource.onerror = () => {
-          statusDiv.innerText = "❌ Connexion au serveur perdue";
-          statusDiv.style.color = "#dc3545";
-          evtSource.close();
-          activeJobs.delete(streamObj.url);
-          downloadBtn.disabled = false;
-        };
-      })
-      .catch(() => {
-        statusDiv.innerText = "❌ Serveur Python éteint 🔌";
-        statusDiv.style.color = "#dc3545";
-        downloadBtn.disabled = false;
-      });
-    });
+    downloadBtn.addEventListener("click", () => startDownload(streamObj, index));
   });
 }
 
@@ -134,8 +159,6 @@ chrome.tabs.query({ active: true, currentWindow: true }, function(tabs) {
     renderStreams(result[`streams_${currentTab.id}`] || []);
   });
 
-  // Rafraîchissement automatique — bloqué si des téléchargements sont en cours
-  // (re-render détruirait les EventSource et réactiverait les boutons actifs)
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area === "local" && currentTab && changes[`streams_${currentTab.id}`]) {
       if (activeJobs.size === 0) {
@@ -147,5 +170,13 @@ chrome.tabs.query({ active: true, currentWindow: true }, function(tabs) {
   document.getElementById("clear-btn").addEventListener("click", () => {
     chrome.storage.local.remove([`streams_${currentTab.id}`]);
     chrome.action.setBadgeText({ tabId: currentTab.id, text: "" });
+  });
+
+  document.getElementById("download-all-btn").addEventListener("click", () => {
+    currentStreams.forEach((streamObj, index) => {
+      if (!activeJobs.has(streamObj.url)) {
+        startDownload(streamObj, index);
+      }
+    });
   });
 });

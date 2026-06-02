@@ -18,7 +18,7 @@ USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTM
 DOWNLOADS_DIR = Path.home() / "Downloads"
 TEMP_DIR = Path(tempfile.gettempdir()) / "grabme_dl"
 
-_jobs: dict = {}
+_jobs: dict = {}        # job_id -> {"q": Queue, "status": str, "filename": str, "message": str}
 _jobs_lock = threading.Lock()
 
 
@@ -198,11 +198,18 @@ def run_skool(url_entree: str, fichier_sortie: str, q: queue.Queue):
         raise subprocess.CalledProcessError(process.returncode, "ffmpeg", stderr=context)
 
 
+def _update_job(job_id: str, **kwargs):
+    with _jobs_lock:
+        if job_id in _jobs:
+            _jobs[job_id].update(kwargs)
+
+
 def download_worker(job_id: str, url: str, fichier_sortie: str):
     with _jobs_lock:
-        q = _jobs.get(job_id)
-    if q is None:
+        job = _jobs.get(job_id)
+    if job is None:
         return
+    q = job["q"]
     try:
         if "loom.com" in url:
             run_loom(url, fichier_sortie, q)
@@ -214,17 +221,26 @@ def download_worker(job_id: str, url: str, fichier_sortie: str):
             run_skool(url, fichier_sortie, q)
 
         if os.path.exists(fichier_sortie):
-            push(q, {"type": "done", "filename": os.path.basename(fichier_sortie)})
+            fname = os.path.basename(fichier_sortie)
+            _update_job(job_id, status="done", filename=fname)
+            push(q, {"type": "done", "filename": fname})
         else:
-            push(q, {"type": "error", "message": "Fichier non généré par FFmpeg/yt-dlp"})
+            msg = "Fichier non généré par FFmpeg/yt-dlp"
+            _update_job(job_id, status="error", message=msg)
+            push(q, {"type": "error", "message": msg})
 
     except FileNotFoundError:
         tool = "yt-dlp" if ("youtube" in url or "youtu.be" in url) else "ffmpeg ou curl"
-        push(q, {"type": "error", "message": f"{tool} introuvable — vérifiez le PATH"})
+        msg = f"{tool} introuvable — vérifiez le PATH"
+        _update_job(job_id, status="error", message=msg)
+        push(q, {"type": "error", "message": msg})
     except subprocess.CalledProcessError as e:
         detail = getattr(e, "stderr", "") or str(e)
-        push(q, {"type": "error", "message": detail[-400:] if detail else "Erreur inconnue"})
+        msg = detail[-400:] if detail else "Erreur inconnue"
+        _update_job(job_id, status="error", message=msg)
+        push(q, {"type": "error", "message": msg})
     except Exception as e:
+        _update_job(job_id, status="error", message=str(e))
         push(q, {"type": "error", "message": str(e)})
 
 
@@ -240,7 +256,7 @@ def download():
     job_id = str(uuid.uuid4())
     q = queue.Queue()
     with _jobs_lock:
-        _jobs[job_id] = q
+        _jobs[job_id] = {"q": q, "status": "running", "filename": "", "message": ""}
 
     stem = safe_filename(title) if title else "video"
     fichier_sortie = unique_path(stem)
@@ -252,12 +268,27 @@ def download():
     return jsonify({"job_id": job_id})
 
 
+@app.route("/status/<job_id>")
+def job_status(job_id: str):
+    """Endpoint de polling pour le service worker Chrome — retourne l'état sans SSE."""
+    with _jobs_lock:
+        job = _jobs.get(job_id)
+    if job is None:
+        return jsonify({"status": "unknown"})
+    return jsonify({
+        "status": job["status"],
+        "filename": job.get("filename", ""),
+        "message": job.get("message", "")
+    })
+
+
 @app.route("/progress/<job_id>")
 def progress_stream(job_id: str):
     with _jobs_lock:
-        q = _jobs.get(job_id)
-    if q is None:
+        job = _jobs.get(job_id)
+    if job is None:
         return jsonify({"error": "Job inconnu"}), 404
+    q = job["q"]
 
     def generate():
         while True:

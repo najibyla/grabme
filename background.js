@@ -1,4 +1,3 @@
-// Stocke un stream dans chrome.storage pour le tabId donné
 function storeStream(tabId, entry, prioritize) {
   chrome.storage.local.get([`streams_${tabId}`], function(result) {
     let streams = result[`streams_${tabId}`] || [];
@@ -31,13 +30,11 @@ chrome.webRequest.onBeforeRequest.addListener(
         const quality = bitrateMatch ? ` (${bitrateMatch[1]}k)` : " HD";
         typeLabel = `🎬 LOOM - Vidéo${quality}`;
       } else if (url.includes("mediaplaylist-audio")) {
-        // La vidéo peut être en cache — on dérive l'URL vidéo depuis l'audio
         typeLabel = "🎬 LOOM - Vidéo (3200k)";
         downloadUrl = url.replace("mediaplaylist-audio.m3u8", "mediaplaylist-video-bitrate3200.m3u8");
       } else if (url.includes(".mp4")) {
         typeLabel = "🎬 LOOM - Direct MP4";
       }
-
       if (typeLabel) {
         storeStream(tabId, { url: downloadUrl, label: typeLabel }, true);
       }
@@ -55,13 +52,23 @@ chrome.webRequest.onBeforeRequest.addListener(
     }
 
     // --- DETECTION VIMEO ---
+    // Utilise le titre envoyé par content.js depuis l'iframe player.vimeo.com
+    // (plus précis que le titre de l'onglet parent qui affiche le nom du site)
     if (url.includes("vimeocdn.com") && url.includes(".m3u8")) {
-      // On récupère le titre de l'onglet au moment où la requête est faite
-      // = titre de la vidéo en cours de lecture
-      chrome.tabs.get(tabId, (tab) => {
-        if (chrome.runtime.lastError) return;
-        const videoTitle = (tab && tab.title) ? tab.title.replace(/ [-|–].+$/, "").trim() : "Vidéo";
-        storeStream(tabId, { url, label: `🎬 VIMEO - ${videoTitle}` }, true);
+      const titleKey = `vimeo_current_title_${tabId}`;
+      chrome.storage.local.get([titleKey], (result) => {
+        const stored = result[titleKey];
+        if (stored) {
+          storeStream(tabId, { url, label: `🎬 VIMEO - ${stored}` }, true);
+        } else {
+          chrome.tabs.get(tabId, (tab) => {
+            if (chrome.runtime.lastError) return;
+            const videoTitle = (tab && tab.title)
+              ? tab.title.replace(/ [-|–].+$/, "").trim()
+              : "Vidéo";
+            storeStream(tabId, { url, label: `🎬 VIMEO - ${videoTitle}` }, true);
+          });
+        }
       });
       return;
     }
@@ -76,7 +83,6 @@ chrome.webRequest.onBeforeRequest.addListener(
         const match = url.match(/(2160|1440|1080|720|480|360|240|144)p/i);
         typeLabel = match ? `SKOOL - Vidéo ${match[1]}p` : "SKOOL - Sous-playlist";
       }
-
       const prioritize = typeLabel.includes("Master") || typeLabel.includes("Vidéo");
       storeStream(tabId, { url: downloadUrl, label: typeLabel }, prioritize);
     }
@@ -85,7 +91,11 @@ chrome.webRequest.onBeforeRequest.addListener(
 );
 
 chrome.tabs.onRemoved.addListener(function(tabId) {
-  chrome.storage.local.remove([`streams_${tabId}`]);
+  chrome.storage.local.remove([
+    `streams_${tabId}`,
+    `vimeo_playlist_${tabId}`,
+    `vimeo_current_title_${tabId}`
+  ]);
 });
 
 function extractYouTubeId(url) {
@@ -96,19 +106,20 @@ function extractYouTubeId(url) {
   return null;
 }
 
-// Efface les streams lors d'un vrai changement d'URL (navigation)
-// changeInfo.url est absent pour les rechargements d'iframes ou sous-ressources
-chrome.tabs.onUpdated.addListener(function(tabId, changeInfo, tab) {
+chrome.tabs.onUpdated.addListener(function(tabId, changeInfo) {
   if (!changeInfo.url) return;
 
-  chrome.storage.local.remove([`streams_${tabId}`]);
+  chrome.storage.local.remove([
+    `streams_${tabId}`,
+    `vimeo_playlist_${tabId}`,
+    `vimeo_current_title_${tabId}`
+  ]);
   chrome.action.setBadgeText({ tabId: tabId, text: "" });
 
   // Auto-détecter les onglets YouTube directs
   const ytId = extractYouTubeId(changeInfo.url);
   if (ytId && (changeInfo.url.includes("youtube.com/watch") || changeInfo.url.includes("youtu.be/"))) {
     const videoUrl = `https://www.youtube.com/watch?v=${ytId}`;
-    // Attendre que l'onglet ait son titre définitif
     setTimeout(() => {
       chrome.tabs.get(tabId, (t) => {
         if (chrome.runtime.lastError) return;
@@ -119,16 +130,102 @@ chrome.tabs.onUpdated.addListener(function(tabId, changeInfo, tab) {
   }
 });
 
-// Reçoit les titres de playlist extraits par content.js
+// -----------------------------------------------------------------------
+// Suivi de téléchargements hors popup (notifications + alarms)
+// -----------------------------------------------------------------------
+const POLL_ALARM = "grabme_poll_jobs";
+
+chrome.alarms.onAlarm.addListener(function(alarm) {
+  if (alarm.name !== POLL_ALARM) return;
+
+  chrome.storage.local.get(["grabme_active_jobs"], (result) => {
+    const jobs = result.grabme_active_jobs || {};
+    if (Object.keys(jobs).length === 0) {
+      chrome.alarms.clear(POLL_ALARM);
+      return;
+    }
+
+    for (const [jobId, info] of Object.entries(jobs)) {
+      fetch(`http://127.0.0.1:5000/status/${jobId}`)
+        .then(r => r.json())
+        .then(data => {
+          if (data.status === "done") {
+            chrome.notifications.create({
+              type: "basic",
+              iconUrl: "icon.png",
+              title: "GrabMe — Téléchargement terminé",
+              message: data.filename || info.title
+            });
+            delete jobs[jobId];
+            chrome.storage.local.set({ grabme_active_jobs: jobs });
+          } else if (data.status === "error") {
+            chrome.notifications.create({
+              type: "basic",
+              iconUrl: "icon.png",
+              title: "GrabMe — Erreur",
+              message: `${info.title}: ${data.message}`
+            });
+            delete jobs[jobId];
+            chrome.storage.local.set({ grabme_active_jobs: jobs });
+          } else if (data.status === "unknown") {
+            // Job disparu du serveur (redémarrage) — nettoyer
+            delete jobs[jobId];
+            chrome.storage.local.set({ grabme_active_jobs: jobs });
+          }
+        })
+        .catch(() => { /* serveur injoignable — réessayer à la prochaine alarme */ });
+    }
+  });
+});
+
 chrome.runtime.onMessage.addListener(function(msg, sender) {
+  // trackJob peut venir du popup (sender.tab peut être null si popup)
+  if (msg.action === "trackJob" && msg.jobId) {
+    chrome.storage.local.get(["grabme_active_jobs"], (result) => {
+      const jobs = result.grabme_active_jobs || {};
+      jobs[msg.jobId] = { title: msg.title || "Vidéo" };
+      chrome.storage.local.set({ grabme_active_jobs: jobs });
+      // Démarrer l'alarme de polling toutes les 10 secondes
+      chrome.alarms.get(POLL_ALARM, (existing) => {
+        if (!existing) {
+          chrome.alarms.create(POLL_ALARM, { periodInMinutes: 1 / 6 });
+        }
+      });
+    });
+    return;
+  }
+
   if (!sender.tab) return;
   const tabId = sender.tab.id;
+
+  // Titre de la vidéo courante envoyé depuis l'iframe player.vimeo.com
+  if (msg.action === "vimeoFrameTitle") {
+    chrome.storage.local.set({ [`vimeo_current_title_${tabId}`]: msg.title });
+
+    // Mettre à jour le label du stream Vimeo le plus récent si déjà capturé
+    const key = `streams_${tabId}`;
+    chrome.storage.local.get([key], (result) => {
+      const streams = result[key] || [];
+      let updated = false;
+      for (const s of streams) {
+        if (s.url.includes("vimeocdn.com") && s.label.includes("VIMEO - ")) {
+          const existingTitle = s.label.replace("🎬 VIMEO - ", "");
+          if (existingTitle !== msg.title) {
+            s.label = `🎬 VIMEO - ${msg.title}`;
+            updated = true;
+          }
+          break;
+        }
+      }
+      if (updated) chrome.storage.local.set({ [key]: streams });
+    });
+  }
 
   if (msg.action === "vimeoPlaylistTitles") {
     chrome.storage.local.set({ [`vimeo_playlist_${tabId}`]: msg.titles });
   }
 
-  // Quand une vidéo Vimeo change (play/ready), mettre à jour le label du stream courant
+  // Fallback : postMessage depuis la page parente (sites qui exposent Vimeo.Hub)
   if (msg.action === "vimeoEvent" && ["play", "ready"].includes(msg.event)) {
     const pageTitle = msg.pageTitle ? msg.pageTitle.replace(/ [-|–|:].+$/, "").trim() : null;
     if (!pageTitle) return;
