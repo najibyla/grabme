@@ -88,18 +88,62 @@ chrome.tabs.onRemoved.addListener(function(tabId) {
   chrome.storage.local.remove([`streams_${tabId}`]);
 });
 
-// Efface les streams uniquement lors d'un vrai changement d'URL (navigation)
+function extractYouTubeId(url) {
+  let m = url.match(/[?&]v=([a-zA-Z0-9_-]{11})/);
+  if (m) return m[1];
+  m = url.match(/youtu\.be\/([a-zA-Z0-9_-]{11})/);
+  if (m) return m[1];
+  return null;
+}
+
+// Efface les streams lors d'un vrai changement d'URL (navigation)
 // changeInfo.url est absent pour les rechargements d'iframes ou sous-ressources
-chrome.tabs.onUpdated.addListener(function(tabId, changeInfo) {
-  if (changeInfo.url) {
-    chrome.storage.local.remove([`streams_${tabId}`]);
-    chrome.action.setBadgeText({ tabId: tabId, text: "" });
+chrome.tabs.onUpdated.addListener(function(tabId, changeInfo, tab) {
+  if (!changeInfo.url) return;
+
+  chrome.storage.local.remove([`streams_${tabId}`]);
+  chrome.action.setBadgeText({ tabId: tabId, text: "" });
+
+  // Auto-détecter les onglets YouTube directs
+  const ytId = extractYouTubeId(changeInfo.url);
+  if (ytId && (changeInfo.url.includes("youtube.com/watch") || changeInfo.url.includes("youtu.be/"))) {
+    const videoUrl = `https://www.youtube.com/watch?v=${ytId}`;
+    // Attendre que l'onglet ait son titre définitif
+    setTimeout(() => {
+      chrome.tabs.get(tabId, (t) => {
+        if (chrome.runtime.lastError) return;
+        const title = (t && t.title && !t.title.includes("youtube.com")) ? t.title : "Vidéo YouTube";
+        storeStream(tabId, { url: videoUrl, label: `▶️ YOUTUBE - ${title}` }, true);
+      });
+    }, 1500);
   }
 });
 
 // Reçoit les titres de playlist extraits par content.js
 chrome.runtime.onMessage.addListener(function(msg, sender) {
-  if (msg.action === "vimeoPlaylistTitles" && sender.tab) {
-    chrome.storage.local.set({ [`vimeo_playlist_${sender.tab.id}`]: msg.titles });
+  if (!sender.tab) return;
+  const tabId = sender.tab.id;
+
+  if (msg.action === "vimeoPlaylistTitles") {
+    chrome.storage.local.set({ [`vimeo_playlist_${tabId}`]: msg.titles });
+  }
+
+  // Quand une vidéo Vimeo change (play/ready), mettre à jour le label du stream courant
+  if (msg.action === "vimeoEvent" && ["play", "ready"].includes(msg.event)) {
+    const pageTitle = msg.pageTitle ? msg.pageTitle.replace(/ [-|–|:].+$/, "").trim() : null;
+    if (!pageTitle) return;
+    const key = `streams_${tabId}`;
+    chrome.storage.local.get([key], (result) => {
+      const streams = result[key] || [];
+      let updated = false;
+      for (const s of streams) {
+        if (s.url.includes("vimeocdn.com")) {
+          s.label = `🎬 VIMEO - ${pageTitle}`;
+          updated = true;
+          break;
+        }
+      }
+      if (updated) chrome.storage.local.set({ [key]: streams });
+    });
   }
 });
