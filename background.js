@@ -40,21 +40,22 @@ chrome.webRequest.onBeforeRequest.addListener(
     }
 
     // --- DETECTION VIMEO PLAYER (iframe src interceptée dès le chargement de la page) ---
-    // Intercepte player.vimeo.com/video/ID?h=HASH avant même que la vidéo joue.
-    // Reconstruit vimeo.com/ID/HASH pour yt-dlp qui gère tout nativement.
     if (url.includes("player.vimeo.com/video/")) {
       const videoMatch = url.match(/player\.vimeo\.com\/video\/(\d+)/);
       if (videoMatch) {
         const videoId   = videoMatch[1];
         const hashMatch = url.match(/[?&]h=([a-f0-9]+)/i);
-        const vimeoUrl  = hashMatch
-          ? `https://vimeo.com/${videoId}/${hashMatch[1]}`
-          : `https://vimeo.com/${videoId}`;
+        // URL normalisée stable pour la dédup ; h= requis pour vidéos unlisted
+        const playerUrl = hashMatch
+          ? `https://player.vimeo.com/video/${videoId}?h=${hashMatch[1]}`
+          : `https://player.vimeo.com/video/${videoId}`;
+        // Site hôte = Referer requis par yt-dlp pour les vidéos domain-restricted
+        const referer = details.initiator || "";
 
         const titleKey = `vimeo_current_title_${tabId}`;
-        chrome.storage.local.get([titleKey], (result) => {
-          const title = result[titleKey] || "⏳";
-          storeStream(tabId, { url: vimeoUrl, label: `🎬 VIMEO - ${title}` }, true);
+        chrome.storage.local.get([titleKey], (res) => {
+          const title = res[titleKey] || "⏳";
+          storeStream(tabId, { url: playerUrl, label: `🎬 VIMEO - ${title}`, referer }, true);
         });
       }
       return;

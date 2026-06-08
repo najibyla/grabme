@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "GrabMe",
-  "version": "1.5",
+  "version": "1.6",
   "description": "Télécharge les vidéos Skool, Loom, YouTube et Vimeo en un clic.",
   "permissions": [
     "webRequest",

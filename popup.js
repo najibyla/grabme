@@ -45,7 +45,8 @@ function startDownload(streamObj, index, formatValue, audioUrlFromQuality) {
         url: streamObj.url,
         title: titleFromStream(streamObj),
         format: formatValue || "",
-        audioUrl
+        audioUrl,
+        referer: (fresh && fresh.referer) || streamObj.referer || ""
       })
     })
   .then(res => res.json())
@@ -124,7 +125,8 @@ function loadQualities(streamObj, index) {
     return;
   }
 
-  fetch(`http://127.0.0.1:5000/qualities?url=${encodeURIComponent(streamObj.url)}`)
+  const refParam = streamObj.referer ? `&referer=${encodeURIComponent(streamObj.referer)}` : "";
+  fetch(`http://127.0.0.1:5000/qualities?url=${encodeURIComponent(streamObj.url)}${refParam}`)
     .then(r => r.json())
     .then(data => {
       if (data.error) {

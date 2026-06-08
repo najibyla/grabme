@@ -122,12 +122,16 @@ def run_loom(url_entree: str, fichier_sortie: str, q: queue.Queue):
 
 
 def run_ytdlp(url: str, fichier_sortie: str, q: queue.Queue,
-              format_str: str = "", progress_label: str = "Téléchargement...") -> str:
-    """Télécharge via yt-dlp (YouTube, Vimeo page, Shorts…)."""
+              format_str: str = "", progress_label: str = "Téléchargement...",
+              referer: str = "") -> str:
+    """Télécharge via yt-dlp (YouTube, Vimeo page, Shorts…).
+    referer : site hôte transmis à yt-dlp pour les vidéos domain-restricted.
+    """
     push(q, {"type": "progress", "label": "Récupération titre..."})
+    extra = ["--referer", referer] if referer else []
     try:
         result = subprocess.run(
-            ["yt-dlp", "--print", "title", "--no-playlist", url],
+            ["yt-dlp", "--print", "title", "--no-playlist"] + extra + [url],
             capture_output=True, text=True, check=True, timeout=15
         )
         title = result.stdout.strip()
@@ -143,9 +147,7 @@ def run_ytdlp(url: str, fichier_sortie: str, q: queue.Queue,
     process = subprocess.Popen(
         ["yt-dlp", "-f", fmt,
          "--merge-output-format", "mp4",
-         "--no-playlist",
-         "-o", temp_output,
-         url],
+         "--no-playlist"] + extra + ["-o", temp_output, url],
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         universal_newlines=True, encoding="utf-8", errors="replace"
     )
@@ -164,8 +166,9 @@ def run_ytdlp(url: str, fichier_sortie: str, q: queue.Queue,
     return fichier_sortie
 
 
-def run_youtube(url: str, fichier_sortie: str, q: queue.Queue, format_str: str = "") -> str:
-    return run_ytdlp(url, fichier_sortie, q, format_str, "Téléchargement YouTube...")
+def run_youtube(url: str, fichier_sortie: str, q: queue.Queue,
+                format_str: str = "", referer: str = "") -> str:
+    return run_ytdlp(url, fichier_sortie, q, format_str, "Téléchargement YouTube...", referer)
 
 
 def run_vimeo(url_entree: str, fichier_sortie: str, q: queue.Queue, audio_url: str = ""):
@@ -231,7 +234,8 @@ def _update_job(job_id: str, **kwargs):
             _jobs[job_id].update(kwargs)
 
 
-def download_worker(job_id: str, url: str, fichier_sortie: str, format_str: str = "", audio_url: str = ""):
+def download_worker(job_id: str, url: str, fichier_sortie: str,
+                    format_str: str = "", audio_url: str = "", referer: str = ""):
     with _jobs_lock:
         job = _jobs.get(job_id)
     if job is None:
@@ -241,10 +245,9 @@ def download_worker(job_id: str, url: str, fichier_sortie: str, format_str: str 
         if "loom.com" in url:
             run_loom(url, fichier_sortie, q)
         elif "youtube.com" in url or "youtu.be" in url:
-            fichier_sortie = run_ytdlp(url, fichier_sortie, q, format_str, "Téléchargement YouTube...")
+            fichier_sortie = run_ytdlp(url, fichier_sortie, q, format_str, "Téléchargement YouTube...", referer)
         elif "vimeo.com" in url and "vimeocdn.com" not in url:
-            # URL page Vimeo (vimeo.com/ID/HASH) — yt-dlp gère qualité + audio
-            fichier_sortie = run_ytdlp(url, fichier_sortie, q, format_str, "Téléchargement Vimeo...")
+            fichier_sortie = run_ytdlp(url, fichier_sortie, q, format_str, "Téléchargement Vimeo...", referer)
         elif "vimeocdn.com" in url:
             actual = format_str if format_str.startswith("http") else url
             run_vimeo(actual, fichier_sortie, q, audio_url)
@@ -278,19 +281,27 @@ def download_worker(job_id: str, url: str, fichier_sortie: str, format_str: str 
 
 @app.route("/qualities", methods=["GET"])
 def get_qualities():
-    url = request.args.get("url", "").strip()
+    url     = request.args.get("url", "").strip()
+    referer = request.args.get("referer", "").strip()
     if not url:
         return jsonify({"error": "URL manquante"}), 400
     try:
         # YouTube / Shorts / Vimeo page (yt-dlp)
         if "youtube.com" in url or "youtu.be" in url or \
            ("vimeo.com" in url and "vimeocdn.com" not in url):
+            extra = ["--referer", referer] if referer else []
             result = subprocess.run(
-                ["yt-dlp", "--dump-json", "--no-playlist", url],
+                ["yt-dlp", "--dump-json", "--no-playlist"] + extra + [url],
                 capture_output=True, text=True, timeout=20,
                 encoding="utf-8", errors="replace"
             )
-            info = json.loads(result.stdout)
+            if not result.stdout.strip():
+                err = result.stderr.strip()[-300:] if result.stderr else "yt-dlp n'a retourné aucune info"
+                return jsonify({"error": err}), 500
+            try:
+                info = json.loads(result.stdout)
+            except json.JSONDecodeError:
+                return jsonify({"error": f"Réponse inattendue de yt-dlp : {result.stderr[:200]}"}), 500
             seen = set()
             qualities = []
             for f in reversed(info.get("formats", [])):
@@ -390,6 +401,7 @@ def download():
     title = data.get("title", "")
     format_str = data.get("format", "").strip()
     audio_url  = data.get("audioUrl", "").strip()
+    referer    = data.get("referer", "").strip()
 
     if not url:
         return jsonify({"status": "error", "message": "URL manquante"}), 400
@@ -403,7 +415,7 @@ def download():
     fichier_sortie = unique_path(stem)
 
     threading.Thread(
-        target=download_worker, args=(job_id, url, fichier_sortie, format_str, audio_url), daemon=True
+        target=download_worker, args=(job_id, url, fichier_sortie, format_str, audio_url, referer), daemon=True
     ).start()
 
     return jsonify({"job_id": job_id})
