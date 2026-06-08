@@ -187,6 +187,7 @@ Naviguer sur `youtube.com/watch?v=...` ou `youtube.com/shorts/...` suffit — l'
 
 | Version | Commit | Changements |
 |---|---|---|
+| 1.5 | `88b9849` | Vimeo détecté dès le chargement de la page (iframe src) ; yt-dlp pour vimeo.com/ID/HASH |
 | 1.4 | `292d2a7` | Fix quality picker audio (Skool/Vimeo) ; YouTube/Shorts détection fiabilisée (webRequest main_frame) |
 | 1.3.2 | `390d3f8` | Fix titre Vimeo "LocalStorage Proxy" ; fix Shorts MV3 (setTimeout → changeInfo.title) |
 | 1.3 | `ff1dedd` | Sélection de résolution (endpoint `/qualities`), yt-dlp format selector, HLS master parsing |
