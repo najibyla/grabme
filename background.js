@@ -39,6 +39,27 @@ chrome.webRequest.onBeforeRequest.addListener(
       return;
     }
 
+    // --- DETECTION VIMEO PLAYER (iframe src interceptée dès le chargement de la page) ---
+    // Intercepte player.vimeo.com/video/ID?h=HASH avant même que la vidéo joue.
+    // Reconstruit vimeo.com/ID/HASH pour yt-dlp qui gère tout nativement.
+    if (url.includes("player.vimeo.com/video/")) {
+      const videoMatch = url.match(/player\.vimeo\.com\/video\/(\d+)/);
+      if (videoMatch) {
+        const videoId   = videoMatch[1];
+        const hashMatch = url.match(/[?&]h=([a-f0-9]+)/i);
+        const vimeoUrl  = hashMatch
+          ? `https://vimeo.com/${videoId}/${hashMatch[1]}`
+          : `https://vimeo.com/${videoId}`;
+
+        const titleKey = `vimeo_current_title_${tabId}`;
+        chrome.storage.local.get([titleKey], (result) => {
+          const title = result[titleKey] || "⏳";
+          storeStream(tabId, { url: vimeoUrl, label: `🎬 VIMEO - ${title}` }, true);
+        });
+      }
+      return;
+    }
+
     // --- DETECTION LOOM ---
     if (url.includes("loom.com")) {
       if (url.includes("mediaplaylist-video")) {
@@ -277,19 +298,17 @@ chrome.runtime.onMessage.addListener(function(msg, sender) {
     if (badTitles.includes(msg.title.toLowerCase())) return;
     chrome.storage.local.set({ [`vimeo_current_title_${tabId}`]: msg.title });
 
-    // Mettre à jour le label du stream Vimeo le plus récent si déjà capturé
+    // Mettre à jour le label de TOUS les streams VIMEO (CDN ou vimeo.com)
     const key = `streams_${tabId}`;
     chrome.storage.local.get([key], (result) => {
       const streams = result[key] || [];
       let updated = false;
       for (const s of streams) {
-        if (s.url.includes("vimeocdn.com") && s.label.includes("VIMEO - ")) {
-          const existingTitle = s.label.replace("🎬 VIMEO - ", "");
-          if (existingTitle !== msg.title) {
+        if (s.label && s.label.includes("🎬 VIMEO")) {
+          if (s.label !== `🎬 VIMEO - ${msg.title}`) {
             s.label = `🎬 VIMEO - ${msg.title}`;
             updated = true;
           }
-          break;
         }
       }
       if (updated) chrome.storage.local.set({ [key]: streams });

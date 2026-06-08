@@ -121,23 +121,25 @@ def run_loom(url_entree: str, fichier_sortie: str, q: queue.Queue):
             f.unlink()
 
 
-def run_youtube(url: str, fichier_sortie: str, q: queue.Queue, format_str: str = "") -> str:
-    push(q, {"type": "progress", "label": "Récupération titre YouTube..."})
+def run_ytdlp(url: str, fichier_sortie: str, q: queue.Queue,
+              format_str: str = "", progress_label: str = "Téléchargement...") -> str:
+    """Télécharge via yt-dlp (YouTube, Vimeo page, Shorts…)."""
+    push(q, {"type": "progress", "label": "Récupération titre..."})
     try:
         result = subprocess.run(
             ["yt-dlp", "--print", "title", "--no-playlist", url],
             capture_output=True, text=True, check=True, timeout=15
         )
-        yt_title = result.stdout.strip()
-        if yt_title:
-            fichier_sortie = unique_path(safe_filename(yt_title))
+        title = result.stdout.strip()
+        if title:
+            fichier_sortie = unique_path(safe_filename(title))
     except Exception:
         pass
 
     temp_output = str(TEMP_DIR / f"{uuid.uuid4()}.mp4")
     fmt = format_str or "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
 
-    push(q, {"type": "progress", "label": "Téléchargement YouTube...", "percent": 0})
+    push(q, {"type": "progress", "label": progress_label, "percent": 0})
     process = subprocess.Popen(
         ["yt-dlp", "-f", fmt,
          "--merge-output-format", "mp4",
@@ -160,6 +162,10 @@ def run_youtube(url: str, fichier_sortie: str, q: queue.Queue, format_str: str =
 
     shutil.move(temp_output, fichier_sortie)
     return fichier_sortie
+
+
+def run_youtube(url: str, fichier_sortie: str, q: queue.Queue, format_str: str = "") -> str:
+    return run_ytdlp(url, fichier_sortie, q, format_str, "Téléchargement YouTube...")
 
 
 def run_vimeo(url_entree: str, fichier_sortie: str, q: queue.Queue, audio_url: str = ""):
@@ -235,8 +241,11 @@ def download_worker(job_id: str, url: str, fichier_sortie: str, format_str: str 
         if "loom.com" in url:
             run_loom(url, fichier_sortie, q)
         elif "youtube.com" in url or "youtu.be" in url:
-            fichier_sortie = run_youtube(url, fichier_sortie, q, format_str)
-        elif "vimeocdn.com" in url or "vimeo.com" in url:
+            fichier_sortie = run_ytdlp(url, fichier_sortie, q, format_str, "Téléchargement YouTube...")
+        elif "vimeo.com" in url and "vimeocdn.com" not in url:
+            # URL page Vimeo (vimeo.com/ID/HASH) — yt-dlp gère qualité + audio
+            fichier_sortie = run_ytdlp(url, fichier_sortie, q, format_str, "Téléchargement Vimeo...")
+        elif "vimeocdn.com" in url:
             actual = format_str if format_str.startswith("http") else url
             run_vimeo(actual, fichier_sortie, q, audio_url)
         else:
@@ -273,8 +282,9 @@ def get_qualities():
     if not url:
         return jsonify({"error": "URL manquante"}), 400
     try:
-        # YouTube / Shorts
-        if "youtube.com" in url or "youtu.be" in url:
+        # YouTube / Shorts / Vimeo page (yt-dlp)
+        if "youtube.com" in url or "youtu.be" in url or \
+           ("vimeo.com" in url and "vimeocdn.com" not in url):
             result = subprocess.run(
                 ["yt-dlp", "--dump-json", "--no-playlist", url],
                 capture_output=True, text=True, timeout=20,
@@ -294,7 +304,8 @@ def get_qualities():
                        f"/bestvideo[height={h}]+bestaudio/best[height<={h}]")
                 qualities.append({"label": f"{h}p", "value": fmt, "height": h})
             qualities.sort(key=lambda x: x["height"], reverse=True)
-            return jsonify({"platform": "youtube", "qualities": qualities[:8]})
+            platform = "vimeo" if "vimeo.com" in url else "youtube"
+            return jsonify({"platform": platform, "qualities": qualities[:8]})
 
         # Loom — bitrates fixes
         if "loom.com" in url:
