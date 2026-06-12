@@ -24,6 +24,7 @@ Détecte et télécharge automatiquement les vidéos sur **Skool**, **Loom**, **
 | YouTube (direct ou embed) | Onglet `youtube.com/watch`, embed, ou iframe | yt-dlp |
 | YouTube Shorts | Onglet `youtube.com/shorts/` | yt-dlp |
 | Vimeo (embed) | URL vimeocdn.com interceptée, titre lu dans l'iframe | FFmpeg |
+| Wistia (embed) | JSON `fast.wistia.com/embed/medias/[ID].json` intercepté | yt-dlp |
 
 ---
 
@@ -187,6 +188,7 @@ Naviguer sur `youtube.com/watch?v=...` ou `youtube.com/shorts/...` suffit — l'
 
 | Version | Commit | Changements |
 |---|---|---|
+| 1.7 | — | Wistia : détection via `fast.wistia.com/embed/medias/[ID].json`, téléchargement + sélection qualité via yt-dlp |
 | 1.6 | — | Fix Vimeo domain-restricted : URL player.vimeo.com + `--referer` pour yt-dlp ; fix crash JSON qualities quand yt-dlp retourne stdout vide |
 | 1.5 | `88b9849` | Vimeo détecté dès le chargement de la page (iframe src) ; yt-dlp pour vimeo.com/ID/HASH |
 | 1.4 | `292d2a7` | Fix quality picker audio (Skool/Vimeo) ; YouTube/Shorts détection fiabilisée (webRequest main_frame) |

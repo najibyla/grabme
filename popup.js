@@ -3,7 +3,7 @@ const activeJobs = new Map(); // url -> EventSource en cours
 let currentStreams = [];
 
 function titleFromStream(streamObj) {
-  const m = streamObj.label.match(/(?:VIMEO|YOUTUBE|LOOM|SHORT)\s*-\s*(.+)$/i);
+  const m = streamObj.label.match(/(?:VIMEO|YOUTUBE|LOOM|SHORT|WISTIA)\s*-\s*(.+)$/i);
   if (m) {
     const extracted = m[1].trim();
     if (!/^(vidéo|video|direct|embed|native|sous-playlist|audio|master|short)/i.test(extracted)) {
@@ -187,6 +187,7 @@ function renderStreams(streams) {
     if (streamObj.label.includes("LOOM"))                                        badgeColor = "#6200ee";
     else if (streamObj.label.includes("YOUTUBE") || streamObj.label.includes("SHORT")) badgeColor = "#ff0000";
     else if (streamObj.label.includes("VIMEO"))                                  badgeColor = "#1ab7ea";
+    else if (streamObj.label.includes("WISTIA"))                                  badgeColor = "#54bbff";
     else if (streamObj.label.includes("⭐"))                                      badgeColor = "#ffc107";
 
     item.innerHTML = `

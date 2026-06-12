@@ -89,6 +89,24 @@ chrome.webRequest.onBeforeRequest.addListener(
       return;
     }
 
+    // --- DETECTION WISTIA ---
+    // Seule la requête JSON du média nous intéresse (se déclenche au chargement du player)
+    // Tous les autres assets Wistia (chunks CDN, JS, CSS, Akamai) sont ignorés
+    if (url.includes("wistia.com") || url.includes("wistia.net") ||
+        url.includes("embedwistia-a.akamaihd.net")) {
+      const match = url.match(/fast\.wistia\.com\/embed\/medias\/([a-z0-9]+)\.json/i);
+      if (match) {
+        const mediaId  = match[1];
+        const embedUrl = `https://fast.wistia.com/embed/iframe/${mediaId}`;
+        chrome.tabs.get(tabId, (tab) => {
+          if (chrome.runtime.lastError) return;
+          const title = (tab && tab.title) || "⏳";
+          storeStream(tabId, { url: embedUrl, label: `🎬 WISTIA - ${title}` }, true);
+        });
+      }
+      return;
+    }
+
     // --- DETECTION VIMEO ---
     // Utilise le titre envoyé par content.js depuis l'iframe player.vimeo.com
     // (plus précis que le titre de l'onglet parent qui affiche le nom du site)

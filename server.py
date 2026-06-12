@@ -248,6 +248,8 @@ def download_worker(job_id: str, url: str, fichier_sortie: str,
             fichier_sortie = run_ytdlp(url, fichier_sortie, q, format_str, "Téléchargement YouTube...", referer)
         elif "vimeo.com" in url and "vimeocdn.com" not in url:
             fichier_sortie = run_ytdlp(url, fichier_sortie, q, format_str, "Téléchargement Vimeo...", referer)
+        elif "wistia.com" in url:
+            fichier_sortie = run_ytdlp(url, fichier_sortie, q, format_str, "Téléchargement Wistia...", referer)
         elif "vimeocdn.com" in url:
             actual = format_str if format_str.startswith("http") else url
             run_vimeo(actual, fichier_sortie, q, audio_url)
@@ -265,7 +267,7 @@ def download_worker(job_id: str, url: str, fichier_sortie: str,
             push(q, {"type": "error", "message": msg})
 
     except FileNotFoundError:
-        tool = "yt-dlp" if ("youtube" in url or "youtu.be" in url) else "ffmpeg ou curl"
+        tool = "yt-dlp" if ("youtube" in url or "youtu.be" in url or "wistia.com" in url) else "ffmpeg ou curl"
         msg = f"{tool} introuvable — vérifiez le PATH"
         _update_job(job_id, status="error", message=msg)
         push(q, {"type": "error", "message": msg})
@@ -288,7 +290,8 @@ def get_qualities():
     try:
         # YouTube / Shorts / Vimeo page (yt-dlp)
         if "youtube.com" in url or "youtu.be" in url or \
-           ("vimeo.com" in url and "vimeocdn.com" not in url):
+           ("vimeo.com" in url and "vimeocdn.com" not in url) or \
+           "wistia.com" in url:
             extra = ["--referer", referer] if referer else []
             result = subprocess.run(
                 ["yt-dlp", "--dump-json", "--no-playlist"] + extra + [url],
@@ -315,7 +318,12 @@ def get_qualities():
                        f"/bestvideo[height={h}]+bestaudio/best[height<={h}]")
                 qualities.append({"label": f"{h}p", "value": fmt, "height": h})
             qualities.sort(key=lambda x: x["height"], reverse=True)
-            platform = "vimeo" if "vimeo.com" in url else "youtube"
+            if "vimeo.com" in url:
+                platform = "vimeo"
+            elif "wistia.com" in url:
+                platform = "wistia"
+            else:
+                platform = "youtube"
             return jsonify({"platform": platform, "qualities": qualities[:8]})
 
         # Loom — bitrates fixes
